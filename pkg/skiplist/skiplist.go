@@ -149,7 +149,8 @@ func (list *Map[K, V]) Insert(key K, value V) {
 
 	// we don't allow dupes in this data structure
 	if x != nil && list.comp.Compare(key, x.key) == 0 {
-		panic("duplicate key insertions are not allowed")
+		x.value = value
+		return
 	}
 
 	randomHeight := randomHeight(list.maxHeight)

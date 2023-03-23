@@ -42,7 +42,7 @@ func (ds *DeviceSkipList) Traversal(cb func(deviceId int64, timeList *TimeSkipLi
 func (ds *DeviceSkipList) NewTimeSkipList(key int64) *TimeSkipList {
 	ds.mutex.Lock()
 	defer ds.mutex.Unlock()
-	list := newTimeSkipList()
+	list := NewTimeSkipList()
 	ds.list.Insert(key, list)
 	return list
 }
@@ -88,8 +88,12 @@ func (ts *TimeSkipList) Insert(t int64, data Data) {
 	defer ts.mutex.Unlock()
 
 	ts.list.Insert(t, data)
-	ts.start = int64(math.Min(float64(ts.start), float64(t)))
-	ts.end = int64(math.Max(float64(ts.end), float64(t)))
+	if ts.start > t {
+		ts.start = t
+	}
+	if ts.end < t {
+		ts.end = t
+	}
 }
 
 func (ts *TimeSkipList) Traversal(cb func(timestamp int64, data Data) error) error {
@@ -148,52 +152,90 @@ func (ts *TimeSkipList) Latest() (ret Data, err error) {
 
 }
 
-type OnInsertCallBack func(table *Table)
-
 type Table struct {
-	List     *DeviceSkipList
-	size     int
-	OnInsert OnInsertCallBack
+	deviceList  *DeviceSkipList
+	startTime   int64
+	endTime     int64
+	maxDeviceId int64
+	cnt         int64
+	mutex       sync.Mutex
+}
+
+func (t *Table) StartTime() int64 {
+	return t.startTime
+}
+
+func (t *Table) EndTime() int64 {
+	return t.endTime
+}
+
+func NewDeviceList() *DeviceSkipList {
+	list := skiplist.NewSkipListMap[int64, *TimeSkipList](skiplist.OrderedComparator[int64]{})
+	return &DeviceSkipList{list: list}
 }
 
 // NewTable key: deviceId value: *timeSkipList
-func NewTable(OnInsert OnInsertCallBack) *Table {
+func NewTable() *Table {
 	list := skiplist.NewSkipListMap[int64, *TimeSkipList](skiplist.OrderedComparator[int64]{})
 	return &Table{
-		List:     &DeviceSkipList{list: list},
-		size:     0,
-		OnInsert: OnInsert,
+		deviceList: &DeviceSkipList{list: list},
+		startTime:  math.MaxInt64,
+		endTime:    math.MinInt64,
+		mutex:      sync.Mutex{},
 	}
 }
 
-// key: timestamp value: data
-func newTimeSkipList() *TimeSkipList {
+// NewTimeSkipList : timestamp value: data
+func NewTimeSkipList() *TimeSkipList {
 	return &TimeSkipList{
 		list:  skiplist.NewSkipListMap[int64, Data](skiplist.OrderedComparator[int64]{}),
-		start: 1e17,
-		end:   0,
+		start: math.MaxInt64,
+		end:   math.MinInt64,
 	}
 
 }
 
 func (t *Table) Insert(timestamp int64, deviceId int64, data Data) {
-	list, err := t.List.Get(deviceId)
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	list, err := t.deviceList.Get(deviceId)
 	if err == skiplist.NotFound {
-		list = t.List.NewTimeSkipList(deviceId)
+		list = t.deviceList.NewTimeSkipList(deviceId)
 	}
 	list.Insert(timestamp, data)
-	t.size += len(data)
-	t.OnInsert(t)
+
+	t.cnt++
+
+	if t.startTime > timestamp {
+		t.startTime = timestamp
+	}
+	if t.endTime < timestamp {
+		t.endTime = timestamp
+	}
+	if deviceId > t.maxDeviceId {
+		t.maxDeviceId = deviceId
+	}
 }
 
-func (t *Table) GetSkipList(deviceId int64) (*TimeSkipList, error) {
-	list, err := t.List.Get(deviceId)
+func (t *Table) GetTimeSkipList(deviceId int64) (*TimeSkipList, error) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	list, err := t.deviceList.Get(deviceId)
 	if err == skiplist.NotFound {
 		return nil, err
 	}
 	return list, nil
 }
 
-func (t *Table) Size() int {
-	return t.size
+func (t *Table) GetDeviceSkipList() *DeviceSkipList {
+	return t.deviceList
+}
+
+func (t *Table) GetMaxDeviceId() int64 {
+	return t.maxDeviceId
+}
+func (t *Table) Count() int64 {
+	return t.cnt
 }
