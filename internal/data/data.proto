@@ -1,9 +1,0 @@
-syntax = "proto3";
-option go_package = "data";
-
-message BinaryData {
-  int64 deviceId = 1;
-  int64 timestamp = 2;
-  bytes body = 4;
-}
-

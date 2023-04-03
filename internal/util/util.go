@@ -23,20 +23,25 @@ func IsDataFileExist(workspace string, level int, name string) bool {
 	return true
 }
 
-func CreateTempFile(workspace string, i int) (*os.File, *os.File, *os.File, string, error) {
-	t := time.Now().UnixNano()
-	random := rand.Int()
-
-	firstIndex, err := os.Create(fmt.Sprintf("%s/tmp/%02d/%d-%d.first_index", workspace, i, t, random))
+func CreateTempFile(workspace string, shardGroup int, shardGroupId int) (*os.File, *os.File, *os.File, string, error) {
+	err := os.MkdirAll(fmt.Sprintf("%s/tmp/%010d/%010d/", workspace, shardGroup, shardGroupId), 0777)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
-	secondIndex, err := os.Create(fmt.Sprintf("%s/tmp/%02d/%d-%d.second_index", workspace, i, t, random))
+
+	t := time.Now().UnixNano()
+	random := rand.Int()
+
+	firstIndex, err := os.OpenFile(fmt.Sprintf("%s/tmp/%010d/%010d/%d-%d.first_index", workspace, shardGroup, shardGroupId, t, random), os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		return nil, nil, nil, "", err
+	}
+	secondIndex, err := os.OpenFile(fmt.Sprintf("%s/tmp/%010d/%010d/%d-%d.second_index", workspace, shardGroup, shardGroupId, t, random), os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		_ = firstIndex.Close()
 		return nil, nil, nil, "", err
 	}
-	dataFile, err := os.Create(fmt.Sprintf("%s/tmp/%02d/%d-%d.data", workspace, i, t, random))
+	dataFile, err := os.OpenFile(fmt.Sprintf("%s/tmp/%010d/%010d/%d-%d.data", workspace, shardGroup, shardGroupId, t, random), os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		_ = firstIndex.Close()
 		_ = secondIndex.Close()
@@ -64,16 +69,24 @@ func OpenDataFile(workspace string, i int, name string) (*os.File, *os.File, *os
 	return firstIndex, secondIndex, dataFile, nil
 }
 
-func ReTempName(workspace string, i int, src string, j int, desc string) error {
-	err := os.Rename(fmt.Sprintf("%s/tmp/%02d/%s.data", workspace, i, src), fmt.Sprintf("%s/data/%02d/%s.data", workspace, j, desc))
+func ReTempName(workspace string, shardGroup int, shardGroupId int, src string) error {
+	err := os.MkdirAll(fmt.Sprintf("%s/data/%010d/%010d/", workspace, shardGroup, shardGroupId), 0777)
 	if err != nil {
 		return err
 	}
-	err = os.Rename(fmt.Sprintf("%s/tmp/%02d/%s.first_index", workspace, i, src), fmt.Sprintf("%s/data/%02d/%s.first_index", workspace, j, desc))
+
+	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.data", workspace, shardGroup, shardGroupId, src),
+		fmt.Sprintf("%s/data/%010d/%010d/%s.data", workspace, shardGroup, shardGroupId, src))
 	if err != nil {
 		return err
 	}
-	err = os.Rename(fmt.Sprintf("%s/tmp/%02d/%s.second_index", workspace, i, src), fmt.Sprintf("%s/data/%02d/%s.second_index", workspace, j, desc))
+	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.first_index", workspace, shardGroup, shardGroupId, src),
+		fmt.Sprintf("%s/data/%010d/%010d/%s.first_index", workspace, shardGroup, shardGroupId, src))
+	if err != nil {
+		return err
+	}
+	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.second_index", workspace, shardGroup, shardGroupId, src),
+		fmt.Sprintf("%s/data/%010d/%010d/%s.second_index", workspace, shardGroup, shardGroupId, src))
 	if err != nil {
 		return err
 	}

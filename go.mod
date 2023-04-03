@@ -8,6 +8,8 @@ require (
 )
 
 require (
+	github.com/bits-and-blooms/bitset v1.5.0 // indirect
+	github.com/bits-and-blooms/bloom/v3 v3.3.1 // indirect
 	github.com/chen3feng/stl4go v0.1.2-0.20230115114023-a5a5c918d876 // indirect
 	github.com/theodesp/go-heaps v0.0.0-20190520121037-88e35354fe0a // indirect
 	github.com/tidwall/gjson v1.10.2 // indirect
