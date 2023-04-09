@@ -1,30 +1,34 @@
 package main
 
 import (
-	"iot-db/internal/data"
-	"iot-db/internal/server"
-	"sync"
-	"time"
+	"context"
+	"github.com/sirupsen/logrus"
+	dumpservice "gitlab.vidagrid.com/wyatt/dump-reader"
+	"iot-db/internal/memorytable"
 )
 
+var shardGroup = memorytable.NewShardGroup("/home/delta/iot-db/data")
+
 func main() {
-	engine := server.NewEngine(".")
-	wp := sync.WaitGroup{}
-	wp.Add(1000)
-	for i := 0; i < 1000; i++ {
-		i := i
-		go func() {
-			err := engine.Write(&data.BinaryData{
-				DeviceId:  int64(i),
-				Timestamp: int64(i),
-				Body:      []byte("1111"),
-			})
-			if err != nil {
-				panic(err)
-			}
-			wp.Done()
-		}()
+	service, err := dumpservice.NewService(context.Background(), &dumpservice.SolarDumpService{
+		Srv: "wj-test-0329",
+	}, "postgres://delta:Delta123@127.0.0.1:5432/meta")
+	if err != nil {
+		logrus.Fatal(err)
 	}
-	wp.Wait()
-	time.Sleep(time.Second * 10)
+
+	for {
+		message, err := service.FetchMessage()
+		if err != nil {
+			logrus.Fatal(err)
+		}
+
+		for _, msg := range message {
+			//logrus.Infoln(msg)
+			// ms -> ns
+			shardGroup.Insert(int64(msg.DeviceId), int64(msg.Time*1e6), msg.Data)
+		}
+
+	}
+
 }

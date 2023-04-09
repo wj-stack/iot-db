@@ -7,16 +7,16 @@ import (
 	"time"
 )
 
-func IsDataFileExist(workspace string, level int, name string) bool {
-	_, err := os.Stat(fmt.Sprintf("%s/data/%02d/%s.first_index", workspace, level, name))
+func IsDataFileExist(workspace string, size int, shardId, name string) bool {
+	_, err := os.Stat(fmt.Sprintf("%s/data/%010d/%s/%s.first_index", workspace, size, shardId, name))
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(fmt.Sprintf("%s/data/%02d/%s.second_index", workspace, level, name))
+	_, err = os.Stat(fmt.Sprintf("%s/data/%010d/%s/%s.second_index", workspace, size, shardId, name))
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(fmt.Sprintf("%s/data/%02d/%s.data", workspace, level, name))
+	_, err = os.Stat(fmt.Sprintf("%s/data/%010d/%s/%s.data", workspace, size, shardId, name))
 	if err != nil {
 		return false
 	}
@@ -50,17 +50,17 @@ func CreateTempFile(workspace string, shardGroup int, shardGroupId int) (*os.Fil
 	return firstIndex, secondIndex, dataFile, fmt.Sprintf("%d-%d", t, random), nil
 }
 
-func OpenDataFile(workspace string, i int, name string) (*os.File, *os.File, *os.File, error) {
-	firstIndex, err := os.Open(fmt.Sprintf("%s/data/%02d/%s.first_index", workspace, i, name))
+func OpenDataFile(workspace string, i int, j string, name string) (*os.File, *os.File, *os.File, error) {
+	firstIndex, err := os.Open(fmt.Sprintf("%s/data/%010d/%s/%s.first_index", workspace, i, j, name))
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	secondIndex, err := os.Open(fmt.Sprintf("%s/data/%02d/%s.second_index", workspace, i, name))
+	secondIndex, err := os.Open(fmt.Sprintf("%s/data/%010d/%s/%s.second_index", workspace, i, j, name))
 	if err != nil {
 		_ = firstIndex.Close()
 		return nil, nil, nil, err
 	}
-	dataFile, err := os.Open(fmt.Sprintf("%s/data/%02d/%s.data", workspace, i, name))
+	dataFile, err := os.Open(fmt.Sprintf("%s/data/%010d/%s/%s.data", workspace, i, j, name))
 	if err != nil {
 		_ = firstIndex.Close()
 		_ = secondIndex.Close()

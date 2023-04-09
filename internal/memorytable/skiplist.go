@@ -1,14 +1,13 @@
 package memorytable
 
 import (
+	"iot-db/internal/datastructure"
+	"iot-db/internal/writer"
 	"iot-db/pkg/skiplist"
 	"math"
 	"os"
 	"sync"
 )
-
-// SampleSizePerShardGroup limit first index size
-const SampleSizePerShardGroup = 20
 
 type DeviceList struct {
 	list  skiplist.MapI[int64, *TimeSkipList]
@@ -17,8 +16,7 @@ type DeviceList struct {
 	// all device
 	startTime int64
 	endTime   int64
-	count     int64
-	size      int64
+	fileSize  int64
 }
 
 func NewDeviceList() *DeviceList {
@@ -30,7 +28,7 @@ func NewDeviceList() *DeviceList {
 	}
 }
 
-func (l *DeviceList) Insert(deviceId int64, data *Data) {
+func (l *DeviceList) Insert(deviceId int64, data *datastructure.Data) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	timeList, err := l.list.Get(deviceId)
@@ -39,8 +37,7 @@ func (l *DeviceList) Insert(deviceId int64, data *Data) {
 		l.list.Insert(deviceId, timeList)
 	}
 	timeList.Insert(data.Timestamp, data)
-	l.count++
-	l.size += int64(data.Length)
+	l.fileSize += int64(data.Length)
 	if data.Timestamp > l.endTime {
 		l.endTime = data.Timestamp
 	}
@@ -49,7 +46,7 @@ func (l *DeviceList) Insert(deviceId int64, data *Data) {
 	}
 }
 
-func (l *DeviceList) Query(did, start, end int64) (ret []*Data, err error) {
+func (l *DeviceList) Query(did, start, end int64) (ret []*datastructure.Data, err error) {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
 
@@ -60,14 +57,43 @@ func (l *DeviceList) Query(did, start, end int64) (ret []*Data, err error) {
 	return list.Query(start, end)
 }
 
+func (l *DeviceList) GetCount() int {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+	iterator, err := l.list.Iterator()
+	if err != nil {
+		return 0
+	}
+	result := 0
+	for {
+		_, v, err := iterator.Next()
+		if err != nil {
+			break
+		}
+		result += v.Size()
+	}
+	return result
+}
+
 func (l *DeviceList) dump(dataFile *os.File, firstIndex *os.File, secondIndex *os.File) error {
+
+	w, err := writer.NewWriter(firstIndex, secondIndex, dataFile)
+	if err != nil {
+		return err
+	}
+
+	// device iterator
 	iterator, err := l.list.Iterator()
 	if err != nil {
 		return err
 	}
-	threshold := l.count / SampleSizePerShardGroup
+
+	threshold := l.list.Size() / datastructure.SampleSizePerShardGroup
+	if threshold == 0 {
+		threshold = 1
+	}
+
 	var cnt int64
-	var offset int64
 	for {
 
 		deviceId, timeSkipList, err := iterator.Next()
@@ -81,43 +107,31 @@ func (l *DeviceList) dump(dataFile *os.File, firstIndex *os.File, secondIndex *o
 		}
 
 		for {
-			timestamp, data, err := it.Next()
+			_, data, err := it.Next()
 			if err != nil {
 				break
 			}
 
-			err = data.Write(dataFile)
+			err = w.WriteData(data)
 			if err != nil {
 				return err
 			}
 
-			offset += int64(len(data.Body))
-
-			cnt++
-			if cnt%threshold == 0 || cnt == 1 || int64(timeSkipList.Size()) == cnt {
-				firstIndexMeta := FirstIndexMeta{
-					Timestamp: timestamp,
-					Offset:    offset,
-				}
-				err := firstIndexMeta.WriteFirstIndex(firstIndex)
+			if int(cnt)%threshold == 0 || cnt == 1 || int64(timeSkipList.Size()) == cnt {
+				err := w.WriteFirstIndex()
 				if err != nil {
 					return err
 				}
+
 			}
+
 		}
 
-		secondIndexMeta := SecondIndexMeta{
-			Start:    timeSkipList.startTime,
-			End:      timeSkipList.endTime,
-			DeviceId: deviceId,
-			Size:     int64(l.list.Size()),
-			Offset:   offset,
-			Flag:     0,
-		}
-		err = secondIndexMeta.WriteSecondIndex(secondIndex)
+		err = w.WriteSecondIndex(deviceId)
 		if err != nil {
 			return err
 		}
+
 	}
 	err = firstIndex.Close()
 	if err != nil {
@@ -135,7 +149,7 @@ func (l *DeviceList) dump(dataFile *os.File, firstIndex *os.File, secondIndex *o
 }
 
 type TimeSkipList struct {
-	skiplist.MapI[int64, *Data]
+	skiplist.MapI[int64, *datastructure.Data]
 	mutex sync.RWMutex
 
 	// just for a device
@@ -144,15 +158,16 @@ type TimeSkipList struct {
 }
 
 func NewTimeSkipList() *TimeSkipList {
+
 	return &TimeSkipList{
-		MapI:      skiplist.NewSkipListMap[int64, *Data](skiplist.OrderedComparator[int64]{}),
+		MapI:      skiplist.NewSkipListMap[int64, *datastructure.Data](skiplist.OrderedComparator[int64]{}),
 		mutex:     sync.RWMutex{},
 		startTime: math.MaxInt64,
 		endTime:   math.MinInt64,
 	}
 }
 
-func (l *TimeSkipList) Insert(timestamp int64, data *Data) {
+func (l *TimeSkipList) Insert(timestamp int64, data *datastructure.Data) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	l.MapI.Insert(timestamp, data)
@@ -164,7 +179,7 @@ func (l *TimeSkipList) Insert(timestamp int64, data *Data) {
 	}
 }
 
-func (l *TimeSkipList) Query(start, end int64) (ret []*Data, err error) {
+func (l *TimeSkipList) Query(start, end int64) (ret []*datastructure.Data, err error) {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
 

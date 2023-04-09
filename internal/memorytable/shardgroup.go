@@ -2,6 +2,8 @@ package memorytable
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
+	"iot-db/internal/datastructure"
 	"iot-db/internal/util"
 	"sync"
 	"time"
@@ -29,17 +31,21 @@ type ShardGroup struct {
 	ItemChan       chan *ShardGroupItem
 	ShardGroupSize int64
 	FragmentSize   int64
+	MaxSize        int64
+	CurrentSize    int64
 	WorkPath       string
 	mutex          sync.RWMutex
 }
 
-func NewShardGroup() *ShardGroup {
+func NewShardGroup(workspace string) *ShardGroup {
 	var obj = &ShardGroup{
 		IMap:           ShardGroupMap{},
 		ItemChan:       make(chan *ShardGroupItem, 10),
 		ShardGroupSize: int64(time.Hour),
 		FragmentSize:   10e6,
-		WorkPath:       "/home/wyatt/code/iot-db/data",
+		CurrentSize:    0,
+		MaxSize:        10e6 * 3,
+		WorkPath:       workspace,
 	}
 	go obj.loopDump()
 	go obj.timeoutDump()
@@ -47,7 +53,6 @@ func NewShardGroup() *ShardGroup {
 }
 
 func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
-
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -62,7 +67,8 @@ func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
 
 	item.UpdatedAt = time.Now()
 
-	item.Insert(deviceId, &Data{
+	item.Insert(deviceId, &datastructure.Data{
+		DeviceId:  deviceId,
 		Length:    int32(len(body)),
 		Flag:      0,
 		Timestamp: timestamp,
@@ -71,24 +77,44 @@ func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
 	})
 
 	// go dump
-	if item.size > s.FragmentSize {
+	if item.fileSize > s.FragmentSize {
 		s.ItemChan <- item
 		delete(s.IMap, shardGroupId)
 	}
 
+	s.CurrentSize += int64(len(body))
+	if s.CurrentSize > s.MaxSize {
+		for _, item := range s.IMap {
+			s.ItemChan <- item
+		}
+		s.IMap = map[ShardGroupId]*ShardGroupItem{}
+		s.CurrentSize = 0
+	}
 }
 
 func (s *ShardGroup) timeoutDump() {
 	for {
-		s.mutex.Lock()
-		for k, v := range s.IMap {
-			if v.UpdatedAt.Add(time.Minute * 30).Before(time.Now()) {
-				go s.dump(v)
-				delete(s.IMap, k)
+		func() {
+			s.mutex.Lock()
+			defer s.mutex.Unlock()
+			for k, v := range s.IMap {
+				if v.UpdatedAt.Add(time.Minute * 30).Before(time.Now()) {
+					delete(s.IMap, k)
+					logrus.Infoln("timeout - dump", k, v.UpdatedAt)
+					s.ItemChan <- v
+				}
 			}
-		}
-		s.mutex.Unlock()
+		}()
 		time.Sleep(time.Minute * 30)
+	}
+}
+
+func (s *ShardGroup) clean() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for k, v := range s.IMap {
+		delete(s.IMap, k)
+		s.ItemChan <- v
 	}
 }
 
@@ -101,7 +127,7 @@ func (s *ShardGroup) loopDump() {
 func (s *ShardGroup) dump(item *ShardGroupItem) {
 	shardGroupId := TimestampConvertShardId(item.DeviceList.startTime, s.ShardGroupSize)
 	fmt.Println("dump:", "ShardGroupSize:", s.ShardGroupSize, "shardGroupId:", shardGroupId,
-		"fileSize：", item.size, "deviceCount:", item.count,
+		"fileSize：", item.fileSize, "deviceCount:", item.list.Size(),
 		"start:", item.startTime, "end:", item.endTime)
 	firstIndex, secondFile, dataFile, name, err := util.CreateTempFile(s.WorkPath, int(s.ShardGroupSize), int(shardGroupId))
 	if err != nil {
