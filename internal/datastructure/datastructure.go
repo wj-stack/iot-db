@@ -1,58 +1,100 @@
 package datastructure
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
+	"iot-db/internal/util"
 	"os"
-	"unsafe"
 )
 
 // SampleSizePerShardGroup limit first index fileSize
 const SampleSizePerShardGroup = 1024
 
-const FirstIndexMetaSize = int64(unsafe.Sizeof(new(FirstIndexMeta)))
-const SecondIndexMetaSize = int64(unsafe.Sizeof(new(SecondIndexMeta)))
-
 // Data point data
 type Data struct {
 	DeviceId  int64 // 8
 	Length    int32 // 4
-	Flag      byte  // 1
+	Flag      Flag  // 1
 	Timestamp int64 // 8
 	CreatedAt int64 // 8
 	Body      []byte
 }
 
-func (d *Data) GetSize() int64 {
-	return 8 + 4 + 1 + 8 + 8 + int64(len(d.Body))
+//func (d *Data) GetSize() int64 {
+//	return 8 + 4 + 1 + 8 + 8 + int64(len(d.Body))
+//}
+
+type Flag byte
+
+const (
+	FLAG_ZIP     = 1 << 0
+	FLAG_COMPACT = 1 << 1
+)
+
+func (f *Flag) IsZip() bool {
+	return (*f)&FLAG_ZIP > 0
 }
 
-func (d *Data) Write(writer io.Writer) error {
+func (f *Flag) IsCompact() bool {
+	return (*f)&FLAG_COMPACT > 0
+}
+
+func zip(body []byte) ([]byte, error) {
+	r := bytes.NewReader(body)
+	w := bytes.NewBuffer([]byte{})
+	err := util.Compress(r, w)
+	if err != nil {
+		return nil, err
+	}
+	return w.Bytes(), nil
+}
+func unzip(body []byte) ([]byte, error) {
+	r := bytes.NewReader(body)
+	w := bytes.NewBuffer([]byte{})
+	err := util.DeCompress(r, w)
+	if err != nil {
+		return nil, err
+	}
+	return w.Bytes(), nil
+}
+
+func (d *Data) Write(writer io.Writer) (int64, error) {
+	//if d.Flag.IsZip() {
+	//	var err error
+	//	d.Body, err = zip(d.Body)
+	//	if err != nil {
+	//		return 0, err
+	//	}
+	//	d.Length = int32(len(d.Body))
+	//}
+
 	err := binary.Write(writer, binary.BigEndian, d.DeviceId)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	err = binary.Write(writer, binary.BigEndian, d.Length)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	err = binary.Write(writer, binary.BigEndian, d.Flag)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	err = binary.Write(writer, binary.BigEndian, d.Timestamp)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	err = binary.Write(writer, binary.BigEndian, d.CreatedAt)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	_, err = writer.Write(d.Body)
+
+	n, err := writer.Write(d.Body)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return nil
+	return int64(n + 8 + 4 + 1 + 8 + 8), nil
 }
 
 func (d *Data) Read(r io.Reader) error {
@@ -81,8 +123,19 @@ func (d *Data) Read(r io.Reader) error {
 	if err != nil {
 		return err
 	}
+
+	//if d.Flag.IsZip() {
+	//	var err error
+	//	d.Body, err = unzip(d.Body)
+	//	if err != nil {
+	//		return err
+	//	}
+	//	d.Length = int32(len(d.Body))
+	//}
 	return nil
 }
+
+const FirstIndexMetaSize = 16
 
 type FirstIndexMeta struct {
 	Timestamp int64
@@ -118,6 +171,8 @@ func (v *FirstIndexMeta) ReadFirstIndexMeta(firstIndex io.Reader) error {
 
 	return nil
 }
+
+const SecondIndexMetaSize = 8 + 8 + 8 + 8 + 8 + 8 + 1
 
 type SecondIndexMeta struct {
 	Start, End     int64

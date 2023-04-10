@@ -5,37 +5,61 @@ import (
 	"github.com/chen3feng/stl4go"
 	"github.com/sirupsen/logrus"
 	"iot-db/internal/datastructure"
-	"iot-db/internal/memorytable"
+	"iot-db/internal/shardgroup"
 	"iot-db/internal/util"
 	"iot-db/internal/writer"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
-	time "time"
 )
-
-var ShardGroupSize = []int64{int64(time.Hour),
-	int64(time.Hour * 24),
-	int64(time.Hour * 24 * 7),
-	int64(time.Hour * 24 * 30),
-	int64(time.Hour * 24 * 90),
-	int64(time.Hour * 24 * 180)}
 
 var path = "/home/wyatt/code/iot-db/data"
 
+func SetWorkspace(s string) {
+	path = s
+}
+
 type Task struct {
 	Args         []string
-	ShardGroupId memorytable.ShardGroupId
+	ShardGroupId shardgroup.ShardGroupId
 }
 
 type FileFd struct {
 	FirstIndex, SecondIndex, DataFile *os.File
 }
 
+func rename(workspace string, shardGroup int, shardGroupId int, targetShardGroup, targetShardGroupId int, src string) error {
+	err := os.MkdirAll(fmt.Sprintf("%s/data/%010d/%010d/", workspace, shardGroup, shardGroupId), 0777)
+	if err != nil {
+		return err
+	}
+	err = os.MkdirAll(fmt.Sprintf("%s/data/%010d/%010d/", workspace, targetShardGroup, targetShardGroupId), 0777)
+	if err != nil {
+		return err
+	}
+	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.data", workspace, shardGroup, shardGroupId, src),
+		fmt.Sprintf("%s/data/%010d/%010d/%s.data", workspace, targetShardGroup, targetShardGroupId, src))
+	if err != nil {
+		return err
+	}
+	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.first_index", workspace, shardGroup, shardGroupId, src),
+		fmt.Sprintf("%s/data/%010d/%010d/%s.first_index", workspace, targetShardGroup, targetShardGroupId, src))
+	if err != nil {
+		return err
+	}
+	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.second_index", workspace, shardGroup, shardGroupId, src),
+		fmt.Sprintf("%s/data/%010d/%010d/%s.second_index", workspace, targetShardGroup, targetShardGroupId, src))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func Compact(cur, next int64, task Task) error {
 
-	firstIndex, secondIndex, dataFile, _, err := util.CreateTempFile(path, int(next), 0)
+	firstIndex, secondIndex, dataFile, name, err := util.CreateTempFile(path, int(next), 0)
+
 	if err != nil {
 		return err
 	}
@@ -45,8 +69,8 @@ func Compact(cur, next int64, task Task) error {
 		return err
 	}
 
+	var ret []FileFd
 	for _, i := range task.Args {
-		var ret []FileFd
 
 		// open file
 		list := getFileList(cur, i)
@@ -75,18 +99,19 @@ func Compact(cur, next int64, task Task) error {
 			}
 		}
 		fmt.Println(fmt.Sprintf("%s/data/%010d/%s", path, cur, i))
-		err = merge(ret, cur, next, w)
-		if err != nil {
-			return err
-		}
-		for _, i := range ret {
-			_ = i.DataFile.Close()
-			_ = i.FirstIndex.Close()
-			_ = i.SecondIndex.Close()
-		}
 	}
 
-	return err
+	err = merge(ret, w)
+	if err != nil {
+		return err
+	}
+	for _, i := range ret {
+		_ = i.DataFile.Close()
+		_ = i.FirstIndex.Close()
+		_ = i.SecondIndex.Close()
+	}
+
+	return rename(path, int(next), 0, int(next), int(task.ShardGroupId), name)
 }
 
 type DeviceHeap struct {
@@ -101,7 +126,7 @@ type TimestampHeap struct {
 	Count   int
 }
 
-func merge(files []FileFd, curShardSize int64, nextShardSize int64, w *writer.Writer) error {
+func merge(files []FileFd, w *writer.Writer) error {
 	fmt.Println("merge:", files)
 
 	var items []DeviceHeap
@@ -133,7 +158,7 @@ func merge(files []FileFd, curShardSize int64, nextShardSize int64, w *writer.Wr
 	})
 
 	fmt.Println("items:", len(items))
-	logrus.Infof("items:%#v\n", items)
+
 	i := 0
 	j := 0
 	var args []DeviceHeap
@@ -211,6 +236,8 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 		}
 		lastTimestamp = v.Timestamp
 
+		v.Flag |= datastructure.FLAG_ZIP
+		v.Flag |= datastructure.FLAG_COMPACT // compact
 		// write file , and write first second
 		err := w.WriteData(&v.Data)
 		if err != nil {
@@ -258,15 +285,15 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 func GenerateTasks(cur, next int64, save int) []Task {
 	dirs := getDirList(cur)
 	fmt.Println(dirs)
-	lastId := memorytable.ShardGroupId(-1)
+	lastId := shardgroup.ShardGroupId(-1)
 	var tasks []Task
 	var args []string
-	var id memorytable.ShardGroupId
+	var id shardgroup.ShardGroupId
 	// The last day's data are retained by default
 	for _, i := range dirs {
 		t, _ := strconv.Atoi(i)
 
-		id = memorytable.TimestampConvertShardId(int64(t*int(cur)), next)
+		id = shardgroup.TimestampConvertShardId(int64(t*int(cur)), next)
 		fmt.Println(id, i)
 		if id != lastId {
 			// commit task
@@ -288,11 +315,12 @@ func GenerateTasks(cur, next int64, save int) []Task {
 			ShardGroupId: id,
 		})
 	}
-	if len(tasks) < save {
-		logrus.Infoln("the number of files is too small to merge")
-		return nil
+
+	if len(tasks) > 0 && len(tasks[len(tasks)-1].Args) >= save {
+		tasks[len(tasks)-1].Args = tasks[len(tasks)-1].Args[:len(tasks[len(tasks)-1].Args)-save]
 	}
-	return tasks[:len(tasks)-save]
+
+	return tasks
 }
 
 func getDirList(shardSize int64) []string {

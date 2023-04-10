@@ -21,11 +21,6 @@ type Writer struct {
 }
 
 func NewWriter(firstIndex, secondFile, dataFile *os.File) (*Writer, error) {
-	//firstIndex, secondFile, dataFile, name, err := util.CreateTempFile(workspace, int(compactor.ShardGroupSize[0]), 0)
-	//if err != nil {
-	//	return nil, err
-	//}
-
 	return &Writer{
 		FirstIndex:      firstIndex,
 		SecondIndex:     secondFile,
@@ -44,7 +39,7 @@ func NewWriter(firstIndex, secondFile, dataFile *os.File) (*Writer, error) {
 func (w *Writer) WriteData(data *datastructure.Data) error {
 
 	// write data
-	err := data.Write(w.DataFile)
+	n, err := data.Write(w.DataFile)
 	if err != nil {
 		return err
 	}
@@ -55,7 +50,7 @@ func (w *Writer) WriteData(data *datastructure.Data) error {
 	w.size++
 	w.lastTimestamp = data.Timestamp
 	w.lastDataFileOffset = w.dataFileOffset
-	w.dataFileOffset += data.GetSize()
+	w.dataFileOffset += n
 
 	if w.start > data.Timestamp {
 		w.start = data.Timestamp
@@ -81,8 +76,6 @@ func (w *Writer) WriteFirstIndex() error {
 	}
 	w.firstIndexCnt++
 	w.firstFileOffset += datastructure.FirstIndexMetaSize
-	//logrus.Infoln("w.dataFileOffset:", w.dataFileOffset, "w.lastDataFileOffset:", w.lastDataFileOffset)
-	w.lastDataFileOffset = w.dataFileOffset
 	return nil
 }
 

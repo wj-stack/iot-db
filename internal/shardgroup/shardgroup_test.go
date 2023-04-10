@@ -1,4 +1,4 @@
-package memorytable
+package shardgroup
 
 import (
 	"bytes"
