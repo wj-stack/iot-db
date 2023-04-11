@@ -5,6 +5,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"io"
 	"iot-db/internal/datastructure"
+	"iot-db/internal/filemanager"
 	"os"
 	"sort"
 )
@@ -32,15 +33,11 @@ func OpenDataFile(path, name string) (*os.File, *os.File, *os.File, error) {
 	return firstIndex, secondIndex, dataFile, nil
 }
 
-func NewReader(path string, name string) (*Reader, error) {
-	firstIndex, secondIndex, dataFile, err := OpenDataFile(path, name)
-	if err != nil {
-		return nil, err
-	}
+func NewReader(f *filemanager.File) (*Reader, error) {
 	return &Reader{
-		firstIndex:  firstIndex,
-		secondIndex: secondIndex,
-		dataFile:    dataFile,
+		firstIndex:  f.FirstIndex,
+		secondIndex: f.SecondIndex,
+		dataFile:    f.DataFile,
 	}, nil
 }
 
@@ -124,7 +121,7 @@ func (r *Reader) Query(did int64, start, end int64) ([]*datastructure.Data, erro
 		return nil, nil
 	}
 
-	logrus.Infof("%#v\n", secondIndex[search])
+	//logrus.Infof("%#v\n", secondIndex[search])
 
 	err := r.SeekFirstIndexFile(secondIndex[search].Offset)
 	if err != nil {
@@ -166,7 +163,6 @@ func (r *Reader) Query(did int64, start, end int64) ([]*datastructure.Data, erro
 		}
 
 		if data.DeviceId == did && data.Timestamp >= start && data.Timestamp <= end {
-			logrus.Infoln("data:", string(data.Body))
 			ret = append(ret, data)
 		} else {
 			break
@@ -175,64 +171,4 @@ func (r *Reader) Query(did int64, start, end int64) ([]*datastructure.Data, erro
 	}
 
 	return ret, nil
-	//for {
-	//	secondIndexMeta := datastructure.SecondIndexMeta{}
-	//	err := secondIndexMeta.ReadSecondIndexMeta(r)
-	//	if err != nil {
-	//		break
-	//	}
-	//	if secondIndexMeta.DeviceId == did {
-	//		logrus.Infof("secondIndexMeta:%#v\n", secondIndexMeta)
-	//
-	//		firstIndexBuf := make([]byte, secondIndexMeta.FirstIndexSize*datastructure.FirstIndexMetaSize)
-	//		_, err := firstIndex.ReadAt(firstIndexBuf, secondIndexMeta.Offset)
-	//		if err != nil {
-	//			return nil, err
-	//		}
-	//
-	//		r := bytes.NewReader(firstIndexBuf)
-	//		firstIndexMeta := datastructure.FirstIndexMeta{}
-	//		var lastOffset int64 = 0
-	//		for {
-	//			err := firstIndexMeta.ReadFirstIndexMeta(r)
-	//			if err != nil {
-	//				break
-	//			}
-	//
-	//			logrus.Infof("firstIndexMeta:%#v\n", firstIndexMeta)
-	//
-	//			if firstIndexMeta.Timestamp > start {
-	//				_, err := dataFile.Seek(lastOffset, io.SeekStart)
-	//				if err != nil {
-	//					return nil, err
-	//				}
-	//				for {
-	//					data := datastructure.Data{}
-	//					err := data.Read(dataFile)
-	//					if err != nil {
-	//						break
-	//					}
-	//
-	//					if data.DeviceId != did {
-	//						break
-	//					}
-	//
-	//					if data.Timestamp <= end && data.Timestamp >= start {
-	//						ret = append(ret, data)
-	//						logrus.Infof("data:%#v\n", data)
-	//
-	//					} else if data.Timestamp < start {
-	//						continue
-	//					} else {
-	//						break
-	//					}
-	//				}
-	//				break
-	//			}
-	//
-	//			lastOffset = firstIndexMeta.Offset
-	//		}
-	//	}
-	//}
-	return nil, nil
 }

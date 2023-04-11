@@ -2,10 +2,10 @@ package shardgroup
 
 import (
 	"iot-db/internal/datastructure"
+	"iot-db/internal/filemanager"
 	"iot-db/internal/writer"
 	"iot-db/pkg/skiplist"
 	"math"
-	"os"
 	"sync"
 )
 
@@ -75,9 +75,9 @@ func (l *DeviceList) GetCount() int {
 	return result
 }
 
-func (l *DeviceList) dump(dataFile *os.File, firstIndex *os.File, secondIndex *os.File) error {
+func (l *DeviceList) dump(file *filemanager.File) error {
 
-	w, err := writer.NewWriter(firstIndex, secondIndex, dataFile)
+	w, err := writer.NewWriter(file)
 	if err != nil {
 		return err
 	}
@@ -132,18 +132,6 @@ func (l *DeviceList) dump(dataFile *os.File, firstIndex *os.File, secondIndex *o
 			return err
 		}
 
-	}
-	err = firstIndex.Close()
-	if err != nil {
-		return err
-	}
-	err = dataFile.Close()
-	if err != nil {
-		return err
-	}
-	err = secondIndex.Close()
-	if err != nil {
-		return err
 	}
 	return nil
 }

@@ -1,7 +1,6 @@
 package compactor
 
 import (
-	"fmt"
 	"github.com/chen3feng/stl4go"
 	"github.com/sirupsen/logrus"
 	"iot-db/internal/datastructure"
@@ -10,8 +9,7 @@ import (
 	"iot-db/internal/writer"
 	"os"
 	"sort"
-	"strconv"
-	"strings"
+	"time"
 )
 
 var path = "/home/wyatt/code/iot-db/data"
@@ -36,70 +34,81 @@ type Compactor struct {
 	*filemanager.FileManager
 }
 
-func NewCompactor() *Compactor {
-	return &Compactor{}
+func NewCompactor(f *filemanager.FileManager) *Compactor {
+	return &Compactor{
+		FileManager: f,
+	}
 }
 
-func (c *Compactor) Compact(task Task) error {
+func (c *Compactor) Compact(index int) error {
+	var x int64 = 1
+	fileList := c.GetCompactFileList(int(shardgroup.ShardGroupSize[index]), // shard size
+		int(shardgroup.ShardGroupSize[index+1]),
+		int(shardgroup.TimestampConvertShardId(time.Now().UnixNano()-x*shardgroup.ShardGroupSize[index], shardgroup.ShardGroupSize[index]))) // max shard id
 
-	// empty dir
-	if len(task.CurrentShardGroupId) == 0 {
+	// empty dir or too small
+	if len(fileList) < 2 {
+		logrus.Infoln("no compact...")
 		return nil
 	}
+	for id, i := range fileList {
+		target := filemanager.NewFileName(int(shardgroup.ShardGroupSize[index+1]), id, 0, 0, int(time.Now().UnixNano()))
+		file, err := c.FileManager.CreateTempFile(target)
+		if err != nil {
+			return err
+		}
+		w, err := writer.NewWriter(file)
+		if err != nil {
+			return err
+		}
 
-	firstIndex, secondIndex, dataFile, name, err := c.FileManager.CreateTempFile(task.NextShardGroupSize, task.NextShardGroupId)
-	if err != nil {
-		return err
-	}
+		var files []*filemanager.File
+		// open files
+		for _, name := range i {
+			file, err := c.FileManager.OpenDataFile(name)
+			if err != nil {
+				return err
+			}
+			files = append(files, file)
+		}
+		logrus.Infoln("merge ->", id, "len:", len(i))
 
-	w, err := writer.NewWriter(firstIndex, secondIndex, dataFile)
-	if err != nil {
-		return err
-	}
+		// merge
+		err = merge(files, w)
+		if err != nil {
+			return err
+		}
 
-	var fds []FileFd
-	for _, i := range task.CurrentShardGroupId {
+		// mv tmp -> data
+		err = c.Rename(target)
+		if err != nil {
+			return err
+		}
 
-		// open file
-		list := c.GetDataFileList(task.CurrentShardGroupSize, i)
-		for _, name := range list {
-
-			if strings.HasSuffix(name, ".data") {
-				name := name[:len(name)-5]
-				isExist := c.IsDataFileExist(int(task.CurrentShardGroupSize), i, name)
-				if isExist {
-					logrus.Traceln("open file:", path, int(task.CurrentShardGroupSize), i, name)
-					firstIndex, secondIndex, dataFile, err := c.OpenDataFile(int(task.CurrentShardGroupSize), i, name)
-					if err != nil {
-						for _, i := range fds {
-							_ = i.DataFile.Close()
-							_ = i.FirstIndex.Close()
-							_ = i.SecondIndex.Close()
-						}
-						return w.Close()
-					}
-					fds = append(fds, FileFd{
-						FirstIndex:  firstIndex,
-						SecondIndex: secondIndex,
-						DataFile:    dataFile,
-						Path:        fmt.Sprintf("%s/data/%010d/%s/%s", path, int(task.CurrentShardGroupSize), i, name),
-					})
-				}
+		// close data file
+		for _, name := range i {
+			err = c.CloseDataFile(name)
+			if err != nil {
+				logrus.Errorln(err)
 			}
 		}
-	}
 
-	err = merge(fds, w)
-	if err != nil {
-		return err
+		// remove
+		for _, name := range i {
+			func(name string) {
+				for {
+					err := c.Del(name)
+					if err != nil {
+						logrus.Warning(err)
+						time.Sleep(time.Second * 1)
+						continue
+					}
+					break
+				}
+			}(name)
+		}
 	}
-	for _, i := range fds {
-		_ = i.DataFile.Close()
-		_ = i.FirstIndex.Close()
-		_ = i.SecondIndex.Close()
-	}
-
-	return c.Rename(int(task.NextShardGroupSize), task.NextShardGroupId, task.NextShardGroupSize, task.NextShardGroupId, name)
+	return nil
 }
 
 type DeviceHeap struct {
@@ -114,7 +123,7 @@ type TimestampHeap struct {
 	Count   int
 }
 
-func merge(files []FileFd, w *writer.Writer) error {
+func merge(files []*filemanager.File, w *writer.Writer) error {
 	var items []DeviceHeap
 
 	for idx, fd := range files {
@@ -168,9 +177,9 @@ func merge(files []FileFd, w *writer.Writer) error {
 }
 
 // did  是 相等的
-func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Writer) error {
+func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w *writer.Writer) error {
 
-	logrus.Traceln("merge did:", did)
+	//logrus.Traceln("merge did:", did)
 
 	h := stl4go.NewPriorityQueueFunc[TimestampHeap](func(a, b TimestampHeap) bool {
 		if a.Timestamp != b.Timestamp {
@@ -198,7 +207,7 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 		size += item.Count
 
 	}
-	logrus.Traceln("size:", size)
+	//logrus.Traceln("size:", size)
 
 	// 计算阈值,用于划分first_index
 	threshold := size / datastructure.SampleSizePerShardGroup
@@ -254,57 +263,10 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 		}
 
 	}
-	logrus.Traceln("unique:", cnt)
+	//logrus.Traceln("unique:", cnt)
 	err := w.WriteSecondIndex(int64(did))
 	if err != nil {
 		return err
 	}
 	return nil
-}
-
-func (c *Compactor) GenerateTasks(cur, next int64, save int) []Task {
-	dirs := c.GetDataDirList(cur)
-	lastId := shardgroup.ShardGroupId(-1)
-	var tasks []Task
-	var args []string
-	var id shardgroup.ShardGroupId
-	// The last day's data are retained by default
-	for _, i := range dirs {
-		t, _ := strconv.Atoi(i)
-
-		id = shardgroup.TimestampConvertShardId(int64(t*int(cur)), next)
-		if id != lastId {
-			// commit task
-			lastId = id
-			if len(args) > 0 {
-				tasks = append(tasks, Task{
-					CurrentShardGroupId:   args,
-					NextShardGroupId:      int(id),
-					CurrentShardGroupSize: cur,
-					NextShardGroupSize:    int(next),
-				})
-			}
-			args = []string{}
-		}
-		args = append(args, i)
-
-	}
-	if len(args) > 0 {
-		tasks = append(tasks, Task{
-			CurrentShardGroupId:   args,
-			NextShardGroupId:      int(id),
-			CurrentShardGroupSize: cur,
-			NextShardGroupSize:    int(next),
-		})
-	}
-
-	if len(tasks) > 0 {
-		if len(tasks[len(tasks)-1].CurrentShardGroupId) >= save {
-			tasks[len(tasks)-1].CurrentShardGroupId = tasks[len(tasks)-1].CurrentShardGroupId[:len(tasks[len(tasks)-1].CurrentShardGroupId)-save]
-		} else {
-			return nil
-		}
-	}
-
-	return tasks
 }

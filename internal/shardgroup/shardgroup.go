@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"iot-db/internal/datastructure"
-	"iot-db/internal/util"
+	"iot-db/internal/filemanager"
 	"sync"
 	"time"
 )
@@ -48,19 +48,20 @@ type ShardGroup struct {
 	FragmentSize   int64
 	MaxSize        int64
 	CurrentSize    int64
-	WorkPath       string
 	mutex          sync.RWMutex
+	*filemanager.FileManager
 }
 
-func NewShardGroup(workspace string) *ShardGroup {
+func NewShardGroup(manager *filemanager.FileManager) *ShardGroup {
 	var obj = &ShardGroup{
 		IMap:           ShardGroupMap{},
 		ItemChan:       make(chan *ShardGroupItem, 10),
 		ShardGroupSize: int64(time.Hour),
-		FragmentSize:   10e6,
+		FragmentSize:   10e6 * 10,     // 100M
+		MaxSize:        10e6 * 10 * 3, // 300M
 		CurrentSize:    0,
-		MaxSize:        10e6 * 3,
-		WorkPath:       workspace,
+		mutex:          sync.RWMutex{},
+		FileManager:    manager,
 	}
 	go obj.loopDump()
 	go obj.timeoutDump()
@@ -113,14 +114,14 @@ func (s *ShardGroup) timeoutDump() {
 			s.mutex.Lock()
 			defer s.mutex.Unlock()
 			for k, v := range s.IMap {
-				if v.UpdatedAt.Add(time.Minute * 30).Before(time.Now()) {
+				if v.UpdatedAt.Add(time.Minute * 1).Before(time.Now()) {
 					delete(s.IMap, k)
 					logrus.Infoln("timeout - dump", k, v.UpdatedAt)
 					s.ItemChan <- v
 				}
 			}
 		}()
-		time.Sleep(time.Minute * 30)
+		time.Sleep(time.Minute * 1)
 	}
 }
 
@@ -144,19 +145,21 @@ func (s *ShardGroup) dump(item *ShardGroupItem) {
 	fmt.Println("dump:", "ShardGroupSize:", s.ShardGroupSize, "shardGroupId:", shardGroupId,
 		"fileSize：", item.fileSize, "deviceCount:", item.list.Size(),
 		"start:", item.startTime, "end:", item.endTime)
-	firstIndex, secondFile, dataFile, name, err := util.CreateTempFile(s.WorkPath, int(s.ShardGroupSize), int(shardGroupId))
+
+	fileName := filemanager.NewFileName(int(s.ShardGroupSize), int(shardGroupId), int(item.startTime), int(item.endTime), int(time.Now().UnixNano()))
+	file, err := s.FileManager.CreateTempFile(fileName)
 	if err != nil {
-		panic(err)
+		logrus.Fatalln(err)
 	}
 
-	err = item.DeviceList.dump(dataFile, firstIndex, secondFile)
+	err = item.DeviceList.dump(file)
 	if err != nil {
-		panic(err)
+		logrus.Fatalln(err)
 	}
 
-	err = util.ReTempName(s.WorkPath, int(s.ShardGroupSize), int(shardGroupId), name)
+	err = s.FileManager.Rename(fileName)
 	if err != nil {
-		panic(err)
+		logrus.Fatalln(err)
 	}
 
 }

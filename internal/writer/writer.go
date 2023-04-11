@@ -2,6 +2,7 @@ package writer
 
 import (
 	"iot-db/internal/datastructure"
+	"iot-db/internal/filemanager"
 	"math"
 	"os"
 )
@@ -20,11 +21,11 @@ type Writer struct {
 	start, end                        int64
 }
 
-func NewWriter(firstIndex, secondFile, dataFile *os.File) (*Writer, error) {
+func NewWriter(file *filemanager.File) (*Writer, error) {
 	return &Writer{
-		FirstIndex:      firstIndex,
-		SecondIndex:     secondFile,
-		DataFile:        dataFile,
+		FirstIndex:      file.FirstIndex,
+		SecondIndex:     file.SecondIndex,
+		DataFile:        file.DataFile,
 		size:            0,
 		cnt:             0,
 		dataFileOffset:  0,
