@@ -143,7 +143,7 @@ type FirstIndexMeta struct {
 }
 
 func (v *FirstIndexMeta) WriteFirstIndex(firstIndex *os.File) error {
-	// write first index
+	// writer first index
 	err := binary.Write(firstIndex, binary.BigEndian, v.Timestamp)
 	if err != nil {
 		return err

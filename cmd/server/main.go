@@ -1,38 +1,44 @@
 package main
 
 import (
-	"context"
 	"github.com/sirupsen/logrus"
-	dumpservice "gitlab.vidagrid.com/wyatt/dump-reader"
+	"iot-db/internal/compactor"
+	"iot-db/internal/config"
 	"iot-db/internal/shardgroup"
+	"time"
 )
 
-var shardGroup = shardgroup.NewShardGroup("/home/delta/iot-db/data")
-
 func main() {
-	service, err := dumpservice.NewService(context.Background(), &dumpservice.SolarDumpService{
-		Srv: "wj-test-0410",
-	}, "postgres://delta:Delta123@192.168.137.51:5432/meta")
-	if err != nil {
-		logrus.Fatal(err)
-	}
 
-	for {
-		message, err := service.FetchMessage()
-		if err != nil {
-			logrus.Fatal(err)
-		}
+	// start shard group
+	//var shardGroup = shardgroup.NewShardGroup(config.Default.workspace)
 
-		for _, msg := range message {
-			//logrus.Infoln(msg)
-			// ms -> ns
-			shardGroup.Insert(int64(msg.DeviceId), int64(msg.Time*1e6), msg.Data)
-		}
+	// start wal
 
-		err = service.Commit(context.Background())
-		if err != nil {
-			return
+	// start compactor
+	go func() {
+		logrus.Infoln("start compactor", config.Default.Workspace)
+		compactor.SetWorkspace(config.Default.Workspace)
+		for {
+			for i := 0; i < len(shardgroup.ShardGroupSize)-1; i++ {
+				tasks := compactor.GenerateTasks(shardgroup.ShardGroupSize[i], shardgroup.ShardGroupSize[i+1], config.Default.SaveFile)
+				for _, task := range tasks {
+					if len(task.dirs) == 0 {
+						continue
+					}
+
+					logrus.Infoln("start compact task", task.ShardGroupId, task.dirs)
+
+					err := compactor.Compact(shardgroup.ShardGroupSize[i], shardgroup.ShardGroupSize[i+1], task)
+					if err != nil {
+						logrus.Fatalln(err)
+					}
+					time.Sleep(time.Second * 10)
+				}
+			}
 		}
-	}
+	}()
+
+	// start web-server
 
 }

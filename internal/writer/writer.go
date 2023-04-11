@@ -38,7 +38,7 @@ func NewWriter(firstIndex, secondFile, dataFile *os.File) (*Writer, error) {
 // WriteData  upper ensure sequential writes
 func (w *Writer) WriteData(data *datastructure.Data) error {
 
-	// write data
+	// writer data
 	n, err := data.Write(w.DataFile)
 	if err != nil {
 		return err
@@ -64,7 +64,7 @@ func (w *Writer) WriteData(data *datastructure.Data) error {
 }
 
 func (w *Writer) WriteFirstIndex() error {
-	// write first index
+	// writer first index
 	firstIndexMeta := datastructure.FirstIndexMeta{
 		Timestamp: w.lastTimestamp,
 		Offset:    w.lastDataFileOffset,
@@ -100,5 +100,21 @@ func (w *Writer) WriteSecondIndex(did int64) error {
 	w.start = int64(math.MaxInt64)
 	w.end = int64(math.MinInt64)
 	w.lastFirstFileOffset = w.firstFileOffset
+	return nil
+}
+
+func (w *Writer) Close() error {
+	err := w.FirstIndex.Close()
+	if err != nil {
+		return err
+	}
+	err = w.SecondIndex.Close()
+	if err != nil {
+		return err
+	}
+	err = w.DataFile.Close()
+	if err != nil {
+		return err
+	}
 	return nil
 }

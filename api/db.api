@@ -1,0 +1,29 @@
+type WriteRequest {
+	Did       int   `path:"did"`
+	Timestamp int64 `path:"timestamp"`
+}
+
+type WriteResponse {
+	Message string `json:"message"`
+	Code    int    `json:"code"`
+}
+
+type ReadRequest {
+	Did   int   `path:"did"`
+	Start int64 `path:"start"`
+	End   int64 `path:"end"`
+}
+
+type ReadResponse {
+	Timestamp []int64  `path:"timestamp"`
+	Data      []string `path:"data"`
+}
+
+service db-api {
+	@handler Write
+	get /write/:did/timestamp (WriteRequest) returns (WriteResponse);
+	
+	@handler Read
+	get /read/:did/:start/:end returns (ReadResponse);
+	
+}

@@ -5,8 +5,8 @@ import (
 	"github.com/chen3feng/stl4go"
 	"github.com/sirupsen/logrus"
 	"iot-db/internal/datastructure"
+	"iot-db/internal/filemanager"
 	"iot-db/internal/shardgroup"
-	"iot-db/internal/util"
 	"iot-db/internal/writer"
 	"os"
 	"sort"
@@ -21,45 +21,33 @@ func SetWorkspace(s string) {
 }
 
 type Task struct {
-	Args         []string
-	ShardGroupId shardgroup.ShardGroupId
+	CurrentShardGroupId   []string // directories waiting to be merged
+	NextShardGroupId      int      // merged shard group id
+	CurrentShardGroupSize int64
+	NextShardGroupSize    int
 }
 
 type FileFd struct {
 	FirstIndex, SecondIndex, DataFile *os.File
+	Path                              string
 }
 
-func rename(workspace string, shardGroup int, shardGroupId int, targetShardGroup, targetShardGroupId int, src string) error {
-	err := os.MkdirAll(fmt.Sprintf("%s/data/%010d/%010d/", workspace, shardGroup, shardGroupId), 0777)
-	if err != nil {
-		return err
-	}
-	err = os.MkdirAll(fmt.Sprintf("%s/data/%010d/%010d/", workspace, targetShardGroup, targetShardGroupId), 0777)
-	if err != nil {
-		return err
-	}
-	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.data", workspace, shardGroup, shardGroupId, src),
-		fmt.Sprintf("%s/data/%010d/%010d/%s.data", workspace, targetShardGroup, targetShardGroupId, src))
-	if err != nil {
-		return err
-	}
-	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.first_index", workspace, shardGroup, shardGroupId, src),
-		fmt.Sprintf("%s/data/%010d/%010d/%s.first_index", workspace, targetShardGroup, targetShardGroupId, src))
-	if err != nil {
-		return err
-	}
-	err = os.Rename(fmt.Sprintf("%s/tmp/%010d/%010d/%s.second_index", workspace, shardGroup, shardGroupId, src),
-		fmt.Sprintf("%s/data/%010d/%010d/%s.second_index", workspace, targetShardGroup, targetShardGroupId, src))
-	if err != nil {
-		return err
-	}
-	return nil
+type Compactor struct {
+	*filemanager.FileManager
 }
 
-func Compact(cur, next int64, task Task) error {
+func NewCompactor() *Compactor {
+	return &Compactor{}
+}
 
-	firstIndex, secondIndex, dataFile, name, err := util.CreateTempFile(path, int(next), 0)
+func (c *Compactor) Compact(task Task) error {
 
+	// empty dir
+	if len(task.CurrentShardGroupId) == 0 {
+		return nil
+	}
+
+	firstIndex, secondIndex, dataFile, name, err := c.FileManager.CreateTempFile(task.NextShardGroupSize, task.NextShardGroupId)
 	if err != nil {
 		return err
 	}
@@ -69,49 +57,49 @@ func Compact(cur, next int64, task Task) error {
 		return err
 	}
 
-	var ret []FileFd
-	for _, i := range task.Args {
+	var fds []FileFd
+	for _, i := range task.CurrentShardGroupId {
 
 		// open file
-		list := getFileList(cur, i)
+		list := c.GetDataFileList(task.CurrentShardGroupSize, i)
 		for _, name := range list {
 
 			if strings.HasSuffix(name, ".data") {
 				name := name[:len(name)-5]
-				isExist := util.IsDataFileExist(path, int(cur), i, name)
+				isExist := c.IsDataFileExist(int(task.CurrentShardGroupSize), i, name)
 				if isExist {
-					fmt.Println("open file:", path, int(cur), i, name)
-					firstIndex, secondIndex, dataFile, err := util.OpenDataFile(path, int(cur), i, name)
+					logrus.Traceln("open file:", path, int(task.CurrentShardGroupSize), i, name)
+					firstIndex, secondIndex, dataFile, err := c.OpenDataFile(int(task.CurrentShardGroupSize), i, name)
 					if err != nil {
-						for _, i := range ret {
+						for _, i := range fds {
 							_ = i.DataFile.Close()
 							_ = i.FirstIndex.Close()
 							_ = i.SecondIndex.Close()
 						}
-						return nil
+						return w.Close()
 					}
-					ret = append(ret, FileFd{
+					fds = append(fds, FileFd{
 						FirstIndex:  firstIndex,
 						SecondIndex: secondIndex,
 						DataFile:    dataFile,
+						Path:        fmt.Sprintf("%s/data/%010d/%s/%s", path, int(task.CurrentShardGroupSize), i, name),
 					})
 				}
 			}
 		}
-		fmt.Println(fmt.Sprintf("%s/data/%010d/%s", path, cur, i))
 	}
 
-	err = merge(ret, w)
+	err = merge(fds, w)
 	if err != nil {
 		return err
 	}
-	for _, i := range ret {
+	for _, i := range fds {
 		_ = i.DataFile.Close()
 		_ = i.FirstIndex.Close()
 		_ = i.SecondIndex.Close()
 	}
 
-	return rename(path, int(next), 0, int(next), int(task.ShardGroupId), name)
+	return c.Rename(int(task.NextShardGroupSize), task.NextShardGroupId, task.NextShardGroupSize, task.NextShardGroupId, name)
 }
 
 type DeviceHeap struct {
@@ -127,21 +115,16 @@ type TimestampHeap struct {
 }
 
 func merge(files []FileFd, w *writer.Writer) error {
-	fmt.Println("merge:", files)
-
 	var items []DeviceHeap
 
-	// 读取当前文件夹所有的二级索引
 	for idx, fd := range files {
 
-		// fd:  文件夹中的一个文件
 		for {
 			var second datastructure.SecondIndexMeta
 			err := second.ReadSecondIndexMeta(fd.SecondIndex)
 			if err != nil {
 				break
 			}
-			// logrus.Infof("second:%#v\n", second)
 			items = append(items, DeviceHeap{
 				DeviceId: int(second.DeviceId),
 				Count:    int(second.Size),
@@ -152,12 +135,11 @@ func merge(files []FileFd, w *writer.Writer) error {
 
 	}
 
-	// 排序
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].DeviceId < items[j].DeviceId
 	})
 
-	fmt.Println("items:", len(items))
+	logrus.Traceln("items:", len(items))
 
 	i := 0
 	j := 0
@@ -188,7 +170,7 @@ func merge(files []FileFd, w *writer.Writer) error {
 // did  是 相等的
 func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Writer) error {
 
-	logrus.Infoln("did:", did)
+	logrus.Traceln("merge did:", did)
 
 	h := stl4go.NewPriorityQueueFunc[TimestampHeap](func(a, b TimestampHeap) bool {
 		if a.Timestamp != b.Timestamp {
@@ -216,7 +198,7 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 		size += item.Count
 
 	}
-	logrus.Infoln("size:", size)
+	logrus.Traceln("size:", size)
 
 	// 计算阈值,用于划分first_index
 	threshold := size / datastructure.SampleSizePerShardGroup
@@ -236,9 +218,7 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 		}
 		lastTimestamp = v.Timestamp
 
-		v.Flag |= datastructure.FLAG_ZIP
-		v.Flag |= datastructure.FLAG_COMPACT // compact
-		// write file , and write first second
+		// writer file , and writer first second
 		err := w.WriteData(&v.Data)
 		if err != nil {
 			return err
@@ -274,7 +254,7 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 		}
 
 	}
-	logrus.Infoln("cnt:", cnt)
+	logrus.Traceln("unique:", cnt)
 	err := w.WriteSecondIndex(int64(did))
 	if err != nil {
 		return err
@@ -282,9 +262,8 @@ func mergeByTimeStamp(files []FileFd, items []DeviceHeap, did int, w *writer.Wri
 	return nil
 }
 
-func GenerateTasks(cur, next int64, save int) []Task {
-	dirs := getDirList(cur)
-	fmt.Println(dirs)
+func (c *Compactor) GenerateTasks(cur, next int64, save int) []Task {
+	dirs := c.GetDataDirList(cur)
 	lastId := shardgroup.ShardGroupId(-1)
 	var tasks []Task
 	var args []string
@@ -294,14 +273,15 @@ func GenerateTasks(cur, next int64, save int) []Task {
 		t, _ := strconv.Atoi(i)
 
 		id = shardgroup.TimestampConvertShardId(int64(t*int(cur)), next)
-		fmt.Println(id, i)
 		if id != lastId {
 			// commit task
 			lastId = id
 			if len(args) > 0 {
 				tasks = append(tasks, Task{
-					Args:         args,
-					ShardGroupId: id,
+					CurrentShardGroupId:   args,
+					NextShardGroupId:      int(id),
+					CurrentShardGroupSize: cur,
+					NextShardGroupSize:    int(next),
 				})
 			}
 			args = []string{}
@@ -311,38 +291,20 @@ func GenerateTasks(cur, next int64, save int) []Task {
 	}
 	if len(args) > 0 {
 		tasks = append(tasks, Task{
-			Args:         args,
-			ShardGroupId: id,
+			CurrentShardGroupId:   args,
+			NextShardGroupId:      int(id),
+			CurrentShardGroupSize: cur,
+			NextShardGroupSize:    int(next),
 		})
 	}
 
-	if len(tasks) > 0 && len(tasks[len(tasks)-1].Args) >= save {
-		tasks[len(tasks)-1].Args = tasks[len(tasks)-1].Args[:len(tasks[len(tasks)-1].Args)-save]
+	if len(tasks) > 0 {
+		if len(tasks[len(tasks)-1].CurrentShardGroupId) >= save {
+			tasks[len(tasks)-1].CurrentShardGroupId = tasks[len(tasks)-1].CurrentShardGroupId[:len(tasks[len(tasks)-1].CurrentShardGroupId)-save]
+		} else {
+			return nil
+		}
 	}
 
 	return tasks
-}
-
-func getDirList(shardSize int64) []string {
-	dir, err := os.ReadDir(fmt.Sprintf("%s/data/%010d", path, shardSize))
-	if err != nil {
-		return nil
-	}
-	var ret []string
-	for _, i := range dir {
-		ret = append(ret, i.Name())
-	}
-	return ret
-}
-
-func getFileList(shardSize int64, shardId string) []string {
-	dir, err := os.ReadDir(fmt.Sprintf("%s/data/%010d/%s/", path, shardSize, shardId))
-	if err != nil {
-		return nil
-	}
-	var ret []string
-	for _, i := range dir {
-		ret = append(ret, i.Name())
-	}
-	return ret
 }
