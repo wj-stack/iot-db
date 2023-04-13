@@ -1,22 +1,30 @@
 package reader
 
 import (
+	"github.com/gammazero/workerpool"
 	"github.com/sirupsen/logrus"
 	"github.com/zeromicro/go-zero/core/collection"
 	"io"
 	"iot-db/internal/datastructure"
 	"iot-db/internal/filemanager"
-	"sort"
+	"iot-db/internal/shardgroup"
+	"os"
+	"sync"
 	"time"
 )
 
+type IndexCache struct {
+	FirstIndex  []*datastructure.FirstIndexMeta
+	SecondIndex map[int64]*datastructure.SecondIndexMeta
+}
+
 type Reader struct {
 	*filemanager.FileManager
-	Cache *collection.Cache
+	Cache *collection.Cache // save second index
 }
 
 func NewReader(f *filemanager.FileManager) (*Reader, error) {
-	c, err := collection.NewCache(time.Minute, collection.WithLimit(10000))
+	c, err := collection.NewCache(time.Minute*10, collection.WithLimit(200))
 	if err != nil {
 		panic(err)
 	}
@@ -27,147 +35,136 @@ func NewReader(f *filemanager.FileManager) (*Reader, error) {
 	}, nil
 }
 
-func (r *Reader) Query1(did, start, end int64) ([]*datastructure.Data, error) {
+func (r *Reader) Query(did, start, end int64) ([]*datastructure.Data, error) {
 
-	//
-
-	return nil, nil
-}
-
-func (r *Reader) ReadSecondIndex() (ret []datastructure.SecondIndexMeta) {
-	for {
-		secondIndexMeta := datastructure.SecondIndexMeta{}
-		err := secondIndexMeta.ReadSecondIndexMeta(r.secondIndex)
-		if err != nil {
-			break
-		}
-		ret = append(ret, secondIndexMeta)
-	}
-	return
-}
-
-func (r *Reader) ReadFirstIndex() (ret []datastructure.FirstIndexMeta) {
-	for {
-		firstIndexMeta := datastructure.FirstIndexMeta{}
-		err := firstIndexMeta.ReadFirstIndexMeta(r.firstIndex)
-		if err != nil {
-			break
-		}
-		ret = append(ret, firstIndexMeta)
-	}
-	return
-}
-
-func (r *Reader) ReadFirstIndexN(n int) (ret []datastructure.FirstIndexMeta) {
-	for i := 0; i < n; i++ {
-		firstIndexMeta := datastructure.FirstIndexMeta{}
-		err := firstIndexMeta.ReadFirstIndexMeta(r.firstIndex)
-		if err != nil {
-			break
-		}
-		ret = append(ret, firstIndexMeta)
-
-	}
-	return
-}
-
-func (r *Reader) ReadAllData() (ret []datastructure.Data) {
-	for {
-		data := datastructure.Data{}
-		err := data.Read(r.dataFile)
-		if err != nil {
-			break
-		}
-		ret = append(ret, data)
-	}
-	return
-}
-
-func (r *Reader) ReadData() (*datastructure.Data, error) {
-	data := datastructure.Data{}
-	err := data.Read(r.dataFile)
-	if err != nil {
-		return nil, err
-	}
-	return &data, nil
-}
-
-func (r *Reader) SeekDataFile(offset int64) error {
-	_, err := r.dataFile.Seek(offset, io.SeekStart)
-	return err
-}
-
-func (r *Reader) SeekFirstIndexFile(offset int64) error {
-	_, err := r.firstIndex.Seek(offset, io.SeekStart)
-	return err
-}
-
-func (r *Reader) Query(did int64, start, end int64) ([]*datastructure.Data, error) {
-
-	secondIndex := r.ReadSecondIndex()
-
-	search := sort.Search(len(secondIndex), func(i int) bool {
-		return secondIndex[i].DeviceId >= did
-	})
-
-	logrus.Infoln("search:", search, len(secondIndex))
-
-	if search == len(secondIndex) {
-		return nil, nil
-	}
-
-	if secondIndex[search].DeviceId != did {
-		return nil, nil
-	}
-
-	//logrus.Infof("%#v\n", secondIndex[search])
-
-	err := r.SeekFirstIndexFile(secondIndex[search].Offset)
-	if err != nil {
-		return nil, err
-	}
-
-	firstIndexN := r.ReadFirstIndexN(int(secondIndex[search].FirstIndexSize))
-
-	logrus.Infof("first index", firstIndexN)
-	var l int = -1
-	for i := 0; i < len(firstIndexN)-1; i++ {
-		logrus.Infoln(firstIndexN[i].Timestamp, firstIndexN[i+1].Timestamp, start)
-		if firstIndexN[i].Timestamp >= start {
-			l = i
-			break
-		}
-	}
-
-	if l == -1 {
-		logrus.Errorln("no found")
-		return nil, nil
-	}
-
-	// find last index
-	if l != 0 {
-		l -= 1
-	}
-	logrus.Infof("%#v\n", firstIndexN[l])
-	err = r.SeekDataFile(firstIndexN[l].Offset)
-	if err != nil {
-		return nil, err
-	}
 	var ret []*datastructure.Data
-	for {
+	var mutex sync.Mutex
+	wp := workerpool.New(len(r.Config.Core.ShardGroupSize))
 
-		data, err := r.ReadData()
-		if err != nil {
-			break
-		}
+	for _, shardSize := range r.Config.Core.ShardGroupSize {
+		shardSize := shardSize
+		wp.Submit(func() {
+			startId := shardgroup.TimestampConvertShardId(start, int64(shardSize))
+			endId := shardgroup.TimestampConvertShardId(end, int64(shardSize))
 
-		if data.DeviceId == did && data.Timestamp >= start && data.Timestamp <= end {
-			ret = append(ret, data)
-		} else {
-			break
-		}
+			files, err := r.FileManager.GetFile(shardSize, int(startId), int(endId))
+			if err != nil {
+				logrus.Errorln(err)
+				return
+			}
+
+			wp := workerpool.New(len(files))
+
+			for _, file := range files {
+				file := file
+				wp.Submit(func() {
+					// get second index
+					//logrus.Infoln("query", file)
+					c, ok := r.Cache.Get(file.Name)
+					if !ok {
+						// get second
+						secondIndex := r.ReadSecondIndex(file.SecondIndex)
+						v := map[int64]*datastructure.SecondIndexMeta{}
+
+						for _, idx := range secondIndex {
+							v[idx.DeviceId] = idx
+						}
+						firstIndex := r.ReadFirstIndex(file.FirstIndex)
+
+						index := &IndexCache{
+							FirstIndex:  firstIndex,
+							SecondIndex: v,
+						}
+
+						r.Cache.Set(file.Name, index)
+						// get first index
+						c = index
+					}
+
+					index := c.(*IndexCache)
+
+					secondIndex, ok := index.SecondIndex[did]
+					if !ok {
+						return
+					}
+
+					//logrus.Infoln("secondIndex:", secondIndex)
+
+					if secondIndex.End < start || secondIndex.Start > end {
+						return
+					}
+
+					begin := int(secondIndex.Offset / datastructure.FirstIndexMetaSize)
+
+					var l = -1
+					for i := 0; i < int(secondIndex.FirstIndexSize); i++ {
+						if index.FirstIndex[begin+i].Timestamp >= start {
+							l = begin + i
+							break
+						}
+					}
+
+					if l == -1 {
+						return
+					}
+
+					logrus.Infoln("first index", index.FirstIndex[l].Offset)
+
+					_, err := file.DataFile.Seek(index.FirstIndex[l].Offset, io.SeekStart)
+					if err != nil {
+						return
+					}
+
+					for {
+						data := datastructure.Data{}
+						err := data.Read(file.DataFile)
+						if err != nil {
+							break
+						}
+
+						if data.DeviceId == did && data.Timestamp >= start && data.Timestamp <= end {
+							mutex.Lock()
+							ret = append(ret, &data)
+							mutex.Unlock()
+						} else {
+							break
+						}
+
+					}
+				})
+
+			}
+			wp.StopWait()
+
+		})
 
 	}
+
+	wp.StopWait()
 
 	return ret, nil
+}
+
+func (r *Reader) ReadSecondIndex(secondIndex *os.File) (ret []*datastructure.SecondIndexMeta) {
+	for {
+		secondIndexMeta := datastructure.SecondIndexMeta{}
+		err := secondIndexMeta.ReadSecondIndexMeta(secondIndex)
+		if err != nil {
+			break
+		}
+		ret = append(ret, &secondIndexMeta)
+	}
+	return
+}
+
+func (r *Reader) ReadFirstIndex(firstIndex *os.File) (ret []*datastructure.FirstIndexMeta) {
+	for {
+		firstIndexMeta := datastructure.FirstIndexMeta{}
+		err := firstIndexMeta.ReadFirstIndexMeta(firstIndex)
+		if err != nil {
+			break
+		}
+		ret = append(ret, &firstIndexMeta)
+	}
+	return
 }

@@ -12,13 +12,13 @@ type File struct {
 	FirstIndex  *os.File
 	SecondIndex *os.File
 	DataFile    *os.File
-	shardId     int
-	shardSize   int
-	name        string
+	ShardId     int
+	ShardSize   int
+	Name        string
 	mutex       sync.RWMutex
 }
 
-// name:(shard_size)_(shard_id)_(start)_(end)_(createdAt)
+// Name:(shard_size)_(shard_id)_(start)_(end)_(createdAt)
 
 func NewFileName(shardSize, shardId, start, end, created int) string {
 	return fmt.Sprintf("%d_%d_%d_%d_%d", shardSize, shardId, start, end, created)
@@ -63,13 +63,13 @@ func OpenFile(workspace string, name string) (*File, error) {
 		FirstIndex:  firstIndex,
 		SecondIndex: secondIndex,
 		DataFile:    data,
-		shardId:     shardId,
-		shardSize:   shardSize,
-		name:        name,
+		ShardId:     shardId,
+		ShardSize:   shardSize,
+		Name:        name,
 	}, nil
 }
 
-func (Fd *File) Close() error {
+func (Fd *File) close() error {
 	if Fd.DataFile != nil {
 		err := Fd.DataFile.Close()
 		if err != nil {

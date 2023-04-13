@@ -12,17 +12,17 @@ import (
 
 type FileManager struct {
 	Config *config.Config
-	mutex  sync.RWMutex
+	Mutex  sync.RWMutex
 	files  map[string]struct{}
-	opened map[string]*File
+	opened map[string]int
 }
 
 func NewFileManager(Config *config.Config) *FileManager {
 	obj := &FileManager{
 		Config: Config,
-		mutex:  sync.RWMutex{},
+		Mutex:  sync.RWMutex{},
 		files:  map[string]struct{}{},
-		opened: map[string]*File{},
+		opened: map[string]int{},
 	}
 	err := obj.InitDir()
 	if err != nil {
@@ -60,11 +60,13 @@ func (fm *FileManager) InitDir() error {
 		if err != nil {
 			return err
 		}
+		logrus.Infoln("dir:", i.Name())
 		for _, j := range dir {
 			dir, err := os.ReadDir(workspace + "/" + i.Name() + "/" + j.Name()) // shard_id
 			if err != nil {
 				return err
 			}
+			logrus.Infoln("dir:", j.Name())
 
 			// remove empty dir
 			if len(dir) == 0 {
@@ -95,8 +97,8 @@ func (fm *FileManager) InitDir() error {
 
 func (fm *FileManager) AddFile(name string) error {
 	logrus.Infoln("add file:", name)
-	fm.mutex.Lock()
-	defer fm.mutex.Unlock()
+	fm.Mutex.Lock()
+	defer fm.Mutex.Unlock()
 	if _, ok := fm.files[name]; ok {
 		return errors.AlreadyExists
 	}
@@ -106,9 +108,9 @@ func (fm *FileManager) AddFile(name string) error {
 
 func (fm *FileManager) DelFile(name string) error {
 	logrus.Infoln("del file:", name)
-	fm.mutex.Lock()
-	defer fm.mutex.Unlock()
-	if _, ok := fm.opened[name]; ok {
+	fm.Mutex.Lock()
+	defer fm.Mutex.Unlock()
+	if fm.opened[name] > 0 {
 		return errors.Annotate(errors.Forbidden, "file is opened!")
 	}
 	if _, ok := fm.files[name]; !ok {
@@ -121,16 +123,15 @@ func (fm *FileManager) DelFile(name string) error {
 func (fm *FileManager) OpenFile(name string) (*File, error) {
 	logrus.Infoln("open file:", name)
 
-	fm.mutex.Lock()
-	defer fm.mutex.Unlock()
+	fm.Mutex.Lock()
+	defer fm.Mutex.Unlock()
 
 	file, err := OpenFile(fm.Config.Core.Path.Data, name)
 	if err != nil {
 		return nil, err
 	}
 
-	fm.opened[name] = file
-	fm.files[name] = struct{}{}
+	fm.opened[name]++
 
 	return file, nil
 }
@@ -138,14 +139,11 @@ func (fm *FileManager) OpenFile(name string) (*File, error) {
 func (fm *FileManager) CloseFile(name string) error {
 	logrus.Infoln("close file:", name)
 
-	fm.mutex.Lock()
-	defer fm.mutex.Unlock()
-	err := fm.opened[name].Close()
-	if err != nil {
-		return err
-	}
+	fm.Mutex.Lock()
+	defer fm.Mutex.Unlock()
 
-	delete(fm.opened, name)
+	fm.opened[name]--
+
 	return nil
 }
 
@@ -158,20 +156,20 @@ func (fm *FileManager) CreateTempFile(name string) (*File, error) {
 }
 
 func (fm *FileManager) SaveTempFile(f *File) error {
-	err := f.Close()
+	err := f.close()
 	if err != nil {
 		return err
 	}
-	err = fm.rename(f.name)
+	err = fm.rename(f.Name)
 	if err != nil {
 		return err
 	}
-	return fm.AddFile(f.name)
+	return fm.AddFile(f.Name)
 }
 
 func (fm *FileManager) GetCompactFileList(shardSize, nextShardSize int, maxId int) map[int][]string {
-	fm.mutex.RLock()
-	defer fm.mutex.RUnlock()
+	fm.Mutex.RLock()
+	defer fm.Mutex.RUnlock()
 	ret := map[int][]string{}
 	for i := range fm.files {
 		size, id, _, _, _ := GetFileInfoByName(i)
@@ -183,14 +181,45 @@ func (fm *FileManager) GetCompactFileList(shardSize, nextShardSize int, maxId in
 	return ret
 }
 
+func (fm *FileManager) GetFile(shardSize, minShardId, maxShardId int) ([]*File, error) {
+	fm.Mutex.Lock()
+	defer fm.Mutex.Unlock()
+	var ret []*File
+	for i := range fm.files {
+		size, id, _, _, _ := GetFileInfoByName(i)
+		if size == shardSize && id >= minShardId && id <= maxShardId {
+			logrus.Infoln("open file:", i)
+			file, err := OpenFile(fm.Config.Core.Path.Data, i)
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, file)
+			fm.opened[i]++
+		}
+	}
+	return ret, nil
+}
+
 func (fm *FileManager) Remove(name string) error {
 	size, id, _, _, _ := GetFileInfoByName(name)
 	err := fm.DelFile(name)
 	if err != nil {
 		return err
 	}
-	path := fmt.Sprintf("%s/%010d/%010d/%s.data", fm.Config.Core.Path.Data, size, id, name)
-	return os.Remove(path)
+	path := fmt.Sprintf("%s/%010d/%010d/%s", fm.Config.Core.Path.Data, size, id, name)
+	err = os.Remove(path + ".data")
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path + ".first_index")
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path + ".second_index")
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (fm *FileManager) rename(name string) error {

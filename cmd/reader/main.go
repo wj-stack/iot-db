@@ -15,12 +15,7 @@ func main() {
 	logrus.SetLevel(logrus.TraceLevel)
 	manager := filemanager.NewFileManager(&config.Default)
 
-	file, err := manager.OpenFile("86400000000000_19317_0_0_1681371447986751129")
-	if err != nil {
-		logrus.Fatalln(err)
-	}
-
-	r, err := reader.NewReader(file)
+	r, err := reader.NewReader(manager)
 	if err != nil {
 		logrus.Fatalln(err)
 	}
@@ -31,11 +26,19 @@ func main() {
 		logrus.Fatalln(err)
 	}
 	logrus.Infoln(time.Now().UnixMilli() - t)
-	//logrus.Infoln(time.UnixMilli(query[0].Timestamp/1e6), time.UnixMilli(query[len(query)-1].Timestamp/1e6))
+	logrus.Infoln(len(query))
 
-	for _, i := range query {
-		logrus.Infoln(i)
+	t = time.Now().UnixMilli()
+	query, err = r.Query(46612, 0, time.Now().UnixNano())
+	if err != nil {
+		logrus.Fatalln(err)
 	}
+	logrus.Infoln(time.Now().UnixMilli() - t)
+	logrus.Infoln(len(query))
+
+	//for _, i := range query {
+	//	logrus.Infoln(i)
+	//}
 	////logrus.Infoln(len(query))
 
 	//i := r.ReadSecondIndex()

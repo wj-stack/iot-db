@@ -29,7 +29,7 @@ func TestFileManager_AddFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -62,7 +62,7 @@ func TestFileManager_CloseFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -96,7 +96,7 @@ func TestFileManager_CreateTempFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -134,7 +134,7 @@ func TestFileManager_DelFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -169,7 +169,7 @@ func TestFileManager_GetCompactFileList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -198,7 +198,7 @@ func TestFileManager_InitDir(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -232,7 +232,7 @@ func TestFileManager_OpenFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -272,7 +272,7 @@ func TestFileManager_ReTempName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -305,7 +305,7 @@ func TestFileManager_Remove(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -338,7 +338,7 @@ func TestFileManager_SaveTempFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
@@ -371,7 +371,7 @@ func TestFileManager_rename(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &FileManager{
 				Config: tt.fields.Config,
-				mutex:  tt.fields.mutex,
+				Mutex:  tt.fields.mutex,
 				files:  tt.fields.files,
 				opened: tt.fields.opened,
 			}
