@@ -3,13 +3,12 @@ package main
 import (
 	"github.com/sirupsen/logrus"
 	"iot-db/internal/compactor"
+	"iot-db/internal/config"
 	"iot-db/internal/filemanager"
 )
 
 func main() {
-	var workspace = "/data/iot-db/data"
-
-	manager := filemanager.NewFileManager(workspace)
+	manager := filemanager.NewFileManager(&config.Default)
 	c := compactor.NewCompactor(manager)
 
 	err := c.Compact(0)

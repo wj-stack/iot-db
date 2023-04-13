@@ -1,2 +1,13 @@
-workspace: /home/delta/iot-db/data
-savefile: 2
+core:
+  path:
+    data: /data/iot-db/data/data
+    wal: /data/iot-db/data/wal
+    rubbish: /data/iot-db/data/tmp
+  shard_group_size: [3600000000000,86400000000000,604800000000000] # 1 hour , 1day , 7day
+  fragment_size: 100000000 #100MB memory
+
+
+compactor:
+  latest_file_size: 1
+  fragment_size: [100000000,500000000,1000000000] #  100MB 500MB  1GB disk
+

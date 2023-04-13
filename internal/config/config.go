@@ -7,8 +7,19 @@ import (
 )
 
 type Config struct {
-	Workspace string `json:"workspace"`
-	SaveFile  int    `json:"savefile"`
+	Core struct {
+		Path struct {
+			Data    string `json:"data"`
+			Wal     string `json:"wal"`
+			Rubbish string `json:"rubbish"`
+		} `json:"path"`
+		ShardGroupSize []int `json:"shard_group_size"`
+		FragmentSize   int   `json:"fragment_size"`
+	} `json:"core"`
+	Compactor struct {
+		LatestFileSize int   `json:"latest_file_size"` // Keep the latest n files and do not participate in the merger
+		FragmentSize   []int `json:"fragment_size"`    // The maximum size of each fragment
+	} `json:"compactor"`
 }
 
 var Default Config

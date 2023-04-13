@@ -9,9 +9,9 @@ import (
 	"sync"
 )
 
-type DeviceList struct {
-	list  skiplist.MapI[int64, *TimeSkipList]
-	mutex sync.RWMutex
+type DeviceSkipList struct {
+	timeList skiplist.MapI[int64, *TimeSkipList]
+	mutex    sync.RWMutex
 
 	// all device
 	startTime int64
@@ -19,48 +19,53 @@ type DeviceList struct {
 	fileSize  int64
 }
 
-func NewDeviceList() *DeviceList {
-	return &DeviceList{
-		list:      skiplist.NewSkipListMap[int64, *TimeSkipList](skiplist.OrderedComparator[int64]{}),
+func NewDeviceSkipList() *DeviceSkipList {
+	return &DeviceSkipList{
+		timeList:  skiplist.NewSkipListMap[int64, *TimeSkipList](skiplist.OrderedComparator[int64]{}),
 		mutex:     sync.RWMutex{},
 		startTime: math.MaxInt64,
 		endTime:   math.MinInt64,
 	}
 }
 
-func (l *DeviceList) Insert(deviceId int64, data *datastructure.Data) {
+func (l *DeviceSkipList) Insert(deviceId int64, data *datastructure.Data) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	timeList, err := l.list.Get(deviceId)
+
+	timeList, err := l.timeList.Get(deviceId)
 	if err != nil {
 		timeList = NewTimeSkipList()
-		l.list.Insert(deviceId, timeList)
+		l.timeList.Insert(deviceId, timeList)
 	}
 	timeList.Insert(data.Timestamp, data)
+
 	l.fileSize += int64(data.Length)
+
 	if data.Timestamp > l.endTime {
 		l.endTime = data.Timestamp
 	}
+
 	if data.Timestamp < l.startTime {
 		l.startTime = data.Timestamp
 	}
 }
 
-func (l *DeviceList) Query(did, start, end int64) (ret []*datastructure.Data, err error) {
+func (l *DeviceSkipList) Query(did, start, end int64) (ret []*datastructure.Data, err error) {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
 
-	list, err := l.list.Get(did)
+	list, err := l.timeList.Get(did)
 	if err != nil {
 		return nil, err
 	}
 	return list.Query(start, end)
 }
 
-func (l *DeviceList) GetCount() int {
+// GetUniqueSize Gets the number of points after deduplication
+func (l *DeviceSkipList) GetUniqueSize() int {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
-	iterator, err := l.list.Iterator()
+	iterator, err := l.timeList.Iterator()
 	if err != nil {
 		return 0
 	}
@@ -75,7 +80,7 @@ func (l *DeviceList) GetCount() int {
 	return result
 }
 
-func (l *DeviceList) dump(file *filemanager.File) error {
+func (l *DeviceSkipList) dump(file *filemanager.File) error {
 
 	w, err := writer.NewWriter(file)
 	if err != nil {
@@ -83,11 +88,11 @@ func (l *DeviceList) dump(file *filemanager.File) error {
 	}
 
 	// device iterator
-	iterator, err := l.list.Iterator()
+	iterator, err := l.timeList.Iterator()
 	if err != nil {
 		return err
 	}
-	threshold := int(float64(l.list.Size()) * 0.1)
+	threshold := int(float64(l.timeList.Size()) * 0.1)
 	if threshold == 0 {
 		threshold = 1
 	}
@@ -157,7 +162,9 @@ func NewTimeSkipList() *TimeSkipList {
 func (l *TimeSkipList) Insert(timestamp int64, data *datastructure.Data) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
+
 	l.MapI.Insert(timestamp, data)
+
 	if timestamp > l.endTime {
 		l.endTime = timestamp
 	}

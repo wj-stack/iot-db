@@ -3,7 +3,6 @@ package filemanager
 import (
 	"fmt"
 	"github.com/dablelv/go-huge-util/conv"
-	"github.com/sirupsen/logrus"
 	"os"
 	"strings"
 	"sync"
@@ -19,7 +18,7 @@ type File struct {
 	mutex       sync.RWMutex
 }
 
-// name: data_(shard_size)_(shard_id)_(start)_(end)_(createdAt)
+// name:(shard_size)_(shard_id)_(start)_(end)_(createdAt)
 
 func NewFileName(shardSize, shardId, start, end, created int) string {
 	return fmt.Sprintf("%d_%d_%d_%d_%d", shardSize, shardId, start, end, created)
@@ -30,7 +29,7 @@ func GetFileInfoByName(name string) (shardSize, shardId, start, end, created int
 	return conv.ToAny[int](split[0]), conv.ToAny[int](split[1]), conv.ToAny[int](split[2]), conv.ToAny[int](split[3]), conv.ToAny[int](split[4])
 }
 
-func NewFile(workspace string, name string) (*File, error) {
+func OpenFile(workspace string, name string) (*File, error) {
 
 	shardSize, shardId, _, _, _ := GetFileInfoByName(name)
 	err := os.MkdirAll(fmt.Sprintf("%s/%010d/%010d/", workspace, shardSize, shardId), 0777)
@@ -39,20 +38,20 @@ func NewFile(workspace string, name string) (*File, error) {
 	}
 
 	// open file
-	firstIndex, err := os.OpenFile(fmt.Sprintf("%s/%010d/%010d/%s.first_index", workspace, shardSize, shardId, name), os.O_CREATE|os.O_WRONLY, 0666)
+	firstIndex, err := os.OpenFile(fmt.Sprintf("%s/%010d/%010d/%s.first_index", workspace, shardSize, shardId, name), os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		_ = firstIndex.Close()
 		return nil, err
 	}
 
-	secondIndex, err := os.OpenFile(fmt.Sprintf("%s/%010d/%010d/%s.second_index", workspace, shardSize, shardId, name), os.O_CREATE|os.O_WRONLY, 0666)
+	secondIndex, err := os.OpenFile(fmt.Sprintf("%s/%010d/%010d/%s.second_index", workspace, shardSize, shardId, name), os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		_ = firstIndex.Close()
 		_ = secondIndex.Close()
 		return nil, err
 	}
 
-	data, err := os.OpenFile(fmt.Sprintf("%s/%010d/%010d/%s.data", workspace, shardSize, shardId, name), os.O_CREATE|os.O_WRONLY, 0666)
+	data, err := os.OpenFile(fmt.Sprintf("%s/%010d/%010d/%s.data", workspace, shardSize, shardId, name), os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		_ = firstIndex.Close()
 		_ = secondIndex.Close()
@@ -92,10 +91,7 @@ func (Fd *File) Close() error {
 	return nil
 }
 
-func removeFile(workspace string, name string) error {
-
-	logrus.Infoln("remove", name)
-
+func RemoveFile(workspace string, name string) error {
 	shardSize, shardId, _, _, _ := GetFileInfoByName(name)
 	err := os.Remove(fmt.Sprintf("%s/%010d/%010d/%s.first_index", workspace, shardSize, shardId, name))
 	if err != nil {

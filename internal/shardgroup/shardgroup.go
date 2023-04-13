@@ -9,39 +9,24 @@ import (
 	"time"
 )
 
-var ShardGroupSize = []int64{int64(time.Hour),
-	int64(time.Hour * 24),
-	int64(time.Hour * 24 * 7),
-	int64(time.Hour * 24 * 30),
+func TimeConvertShardId(t time.Time, shardGroupSize int64) int64 {
+	return int64(t.UnixNano() / shardGroupSize)
 }
 
-// 五分钟一条数据
-var SampleSizePerShardGroup = []int64{1,
-	5,
-	25,
-	15,
-	30}
-
-type ShardGroupId int64
-
-func TimeConvertShardId(t time.Time, shardGroupSize int64) ShardGroupId {
-	return ShardGroupId(t.UnixNano() / shardGroupSize)
+func TimestampConvertShardId(t int64, shardGroupSize int64) int64 {
+	return int64(t / shardGroupSize)
 }
 
-func TimestampConvertShardId(t int64, shardGroupSize int64) ShardGroupId {
-	return ShardGroupId(t / shardGroupSize)
-}
-
-type ShardGroupItem struct {
-	*DeviceList
+type Item struct {
+	*DeviceSkipList
 	UpdatedAt time.Time
 }
 
-type ShardGroupMap map[ShardGroupId]*ShardGroupItem
+type Map map[int64]*Item
 
 type ShardGroup struct {
-	IMap           ShardGroupMap
-	ItemChan       chan *ShardGroupItem
+	IMap           Map
+	ItemChan       chan *Item
 	ShardGroupSize int64
 	FragmentSize   int64
 	MaxSize        int64
@@ -52,8 +37,8 @@ type ShardGroup struct {
 
 func NewShardGroup(manager *filemanager.FileManager) *ShardGroup {
 	var obj = &ShardGroup{
-		IMap:           ShardGroupMap{},
-		ItemChan:       make(chan *ShardGroupItem, 10),
+		IMap:           Map{},
+		ItemChan:       make(chan *Item, 10),
 		ShardGroupSize: int64(time.Hour),
 		FragmentSize:   10e6 * 10,     // 100M
 		MaxSize:        10e6 * 10 * 3, // 300M
@@ -73,8 +58,8 @@ func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
 	shardGroupId := TimestampConvertShardId(timestamp, s.ShardGroupSize)
 	item, ok := s.IMap[shardGroupId]
 	if !ok {
-		s.IMap[shardGroupId] = &ShardGroupItem{
-			DeviceList: NewDeviceList(),
+		s.IMap[shardGroupId] = &Item{
+			DeviceSkipList: NewDeviceSkipList(),
 		}
 		item = s.IMap[shardGroupId]
 	}
@@ -101,7 +86,7 @@ func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
 		for _, item := range s.IMap {
 			s.ItemChan <- item
 		}
-		s.IMap = map[ShardGroupId]*ShardGroupItem{}
+		s.IMap = map[int64]*Item{}
 		s.CurrentSize = 0
 	}
 }
@@ -138,10 +123,11 @@ func (s *ShardGroup) loopDump() {
 	}
 }
 
-func (s *ShardGroup) dump(item *ShardGroupItem) {
-	shardGroupId := TimestampConvertShardId(item.DeviceList.startTime, s.ShardGroupSize)
+func (s *ShardGroup) dump(item *Item) {
+	shardGroupId := TimestampConvertShardId(item.DeviceSkipList.startTime, s.ShardGroupSize)
+
 	fmt.Println("dump:", "ShardGroupSize:", s.ShardGroupSize, "shardGroupId:", shardGroupId,
-		"fileSize：", item.fileSize, "deviceCount:", item.list.Size(),
+		"fileSize：", item.fileSize, "deviceCount:", item.timeList.Size(),
 		"start:", item.startTime, "end:", item.endTime)
 
 	fileName := filemanager.NewFileName(int(s.ShardGroupSize), int(shardGroupId), int(item.startTime), int(item.endTime), int(time.Now().UnixNano()))
@@ -150,12 +136,12 @@ func (s *ShardGroup) dump(item *ShardGroupItem) {
 		logrus.Fatalln(err)
 	}
 
-	err = item.DeviceList.dump(file)
+	err = item.DeviceSkipList.dump(file)
 	if err != nil {
 		logrus.Fatalln(err)
 	}
 
-	err = s.FileManager.Rename(fileName)
+	err = s.FileManager.SaveTempFile(file)
 	if err != nil {
 		logrus.Fatalln(err)
 	}

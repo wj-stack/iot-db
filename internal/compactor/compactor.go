@@ -1,9 +1,9 @@
 package compactor
 
 import (
-	"errors"
 	"github.com/chen3feng/stl4go"
 	"github.com/sirupsen/logrus"
+	"iot-db/internal/config"
 	"iot-db/internal/datastructure"
 	"iot-db/internal/filemanager"
 	"iot-db/internal/shardgroup"
@@ -20,20 +20,36 @@ type Task struct {
 }
 
 type Compactor struct {
+	Config *config.Config
 	*filemanager.FileManager
 }
 
 func NewCompactor(f *filemanager.FileManager) *Compactor {
 	return &Compactor{
+		Config:      f.Config,
 		FileManager: f,
 	}
 }
 
+func (c *Compactor) createTempFile(index, id int) (string, *filemanager.File, *writer.Writer, error) {
+	target := filemanager.NewFileName(int(c.Config.Core.ShardGroupSize[index+1]), id, 0, 0, int(time.Now().UnixNano()))
+	file, err := c.FileManager.CreateTempFile(target)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	w, err := writer.NewWriter(file)
+	logrus.Infoln("write file:", target, w)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return target, file, w, nil
+}
+
 func (c *Compactor) Compact(index int) error {
 	var x int64 = 1
-	fileList := c.GetCompactFileList(int(shardgroup.ShardGroupSize[index]), // shard size
-		int(shardgroup.ShardGroupSize[index+1]),
-		int(shardgroup.TimestampConvertShardId(time.Now().UnixNano()-x*shardgroup.ShardGroupSize[index], shardgroup.ShardGroupSize[index]))) // max shard id
+	fileList := c.GetCompactFileList(c.Config.Core.ShardGroupSize[index], // shard size
+		c.Config.Core.ShardGroupSize[index+1],
+		int(shardgroup.TimestampConvertShardId(time.Now().UnixNano()-x*int64(c.Config.Core.ShardGroupSize[index]), int64(c.Config.Core.ShardGroupSize[index])))) // max shard id
 
 	// empty dir or too small
 	//if len(fileList) < 2 {
@@ -41,76 +57,121 @@ func (c *Compactor) Compact(index int) error {
 	//	return nil
 	//}
 
+	logrus.Infoln("compact", fileList)
+
 	for id, i := range fileList {
 
 		var files []*filemanager.File
 		// open files
 		for _, name := range i {
-			file, err := c.FileManager.OpenDataFile(name)
+			file, err := c.FileManager.OpenFile(name)
 			if err != nil {
 				return err
 			}
 			files = append(files, file)
 		}
-		logrus.Infoln("merge ->", id, "len:", len(i))
+		logrus.Infoln("merge ->", id, "len:", len(i), len(files), files)
 
-	Start:
-		target := filemanager.NewFileName(int(shardgroup.ShardGroupSize[index+1]), id, 0, 0, int(time.Now().UnixNano()))
-		file, err := c.FileManager.CreateTempFile(target)
+		var items []DeviceHeap
+
+		for idx, fd := range files {
+			for {
+				var second datastructure.SecondIndexMeta
+				err := second.ReadSecondIndexMeta(fd.SecondIndex)
+				if err != nil {
+					break
+				}
+
+				items = append(items, DeviceHeap{
+					DeviceId: int(second.DeviceId),
+					Count:    int(second.Size),
+					FdIndex:  idx,
+				})
+
+			}
+		}
+
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].DeviceId < items[j].DeviceId
+		})
+
+		lIdx := 0
+		rIdx := 0
+
+		logrus.Infoln("second index len:", len(items))
+
+		// create temp file
+		target, file, w, err := c.createTempFile(index, id)
 		if err != nil {
 			return err
 		}
-		w, err := writer.NewWriter(file)
-		if err != nil {
-			return err
+
+		logrus.Infoln("target:", target)
+		var args []DeviceHeap
+		for rIdx < len(items) {
+			if items[rIdx].DeviceId != items[lIdx].DeviceId {
+				// commit
+				err := mergeByTimeStamp(files, args, items[lIdx].DeviceId, w)
+				if err != nil {
+					return err
+				}
+				args = nil
+				lIdx = rIdx
+				if w.DataFileOffset > int64(c.Config.Compactor.FragmentSize[index+1]) {
+					logrus.Infoln("too big... create new file...")
+					err = c.SaveTempFile(file)
+					if err != nil {
+						return err
+					}
+
+					// create w
+					target, file, w, err = c.createTempFile(index, id)
+					if err != nil {
+						return err
+					}
+					logrus.Infoln("new file:", target)
+				}
+			}
+			args = append(args, items[rIdx])
+			rIdx++
+
 		}
-
-		// merge
-		err = merge(files, w)
-
-		if errors.Is(err, BigError) {
-			// mv tmp -> data
-			logrus.Infoln("too big... create new file...")
-			err = c.Rename(target)
+		// commit
+		if len(args) > 0 {
+			err := mergeByTimeStamp(files, args, items[lIdx].DeviceId, w)
 			if err != nil {
 				return err
 			}
-			goto Start
-
-		}
-
-		if err != nil {
-			return err
 		}
 
 		// mv tmp -> data
-		err = c.Rename(target)
+		err = c.SaveTempFile(file)
 		if err != nil {
 			return err
 		}
 
 		// close data file
-		for _, name := range i {
-			err = c.CloseDataFile(name)
+		for _, i := range i {
+			err := c.FileManager.CloseFile(i)
 			if err != nil {
-				logrus.Errorln(err)
+				return err
 			}
 		}
 
 		// remove
-		//for _, name := range i {
-		//	func(name string) {
-		//		for {
-		//			err := c.Del(name)
-		//			if err != nil {
-		//				logrus.Warning(err)
-		//				time.Sleep(time.Second * 1)
-		//				continue
-		//			}
-		//			break
-		//		}
-		//	}(name)
-		//}
+		for _, name := range i {
+			func(name string) {
+				for {
+					err := c.FileManager.Remove(name)
+					if err != nil {
+						logrus.Warning(err)
+						time.Sleep(time.Second * 1)
+						continue
+					}
+					break
+				}
+			}(name)
+		}
 	}
 	return nil
 }
@@ -127,69 +188,9 @@ type TimestampHeap struct {
 	Count   int
 }
 
-var BigError = errors.New("too big")
-
-func merge(files []*filemanager.File, w *writer.Writer) error {
-	var items []DeviceHeap
-
-	for idx, fd := range files {
-
-		for {
-			var second datastructure.SecondIndexMeta
-			err := second.ReadSecondIndexMeta(fd.SecondIndex)
-			if err != nil {
-				break
-			}
-			items = append(items, DeviceHeap{
-				DeviceId: int(second.DeviceId),
-				Count:    int(second.Size),
-				FdIndex:  idx,
-			})
-
-		}
-
-	}
-
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].DeviceId < items[j].DeviceId
-	})
-
-	logrus.Traceln("items:", len(items))
-
-	i := 0
-	j := 0
-	var args []DeviceHeap
-	for j < len(items) {
-		if items[j].DeviceId != items[i].DeviceId {
-			// commit
-			err := mergeByTimeStamp(files, args, items[i].DeviceId, w)
-			if err != nil {
-				return err
-			}
-			args = nil
-			i = j
-		}
-		args = append(args, items[j])
-		j++
-
-		if w.DataFileOffset > 1e9 {
-			return BigError
-		}
-	}
-	// commit
-	if len(args) > 0 {
-		err := mergeByTimeStamp(files, args, items[i].DeviceId, w)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// did  是 相等的
 func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w *writer.Writer) error {
 
-	//logrus.Traceln("merge did:", did)
+	//logrus.Infoln("merge did:", did)
 
 	h := stl4go.NewPriorityQueueFunc[TimestampHeap](func(a, b TimestampHeap) bool {
 		if a.Timestamp != b.Timestamp {
@@ -217,10 +218,9 @@ func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w 
 		size += item.Count
 
 	}
-	//logrus.Traceln("size:", size)
 
 	// 计算阈值,用于划分first_index
-	threshold := int(float64(size) * 0.01)
+	threshold := int(float64(size) * 0.1)
 	if threshold == 0 {
 		threshold = 1
 	}

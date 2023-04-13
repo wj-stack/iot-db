@@ -1,44 +1,37 @@
 package reader
 
 import (
-	"fmt"
 	"github.com/sirupsen/logrus"
+	"github.com/zeromicro/go-zero/core/collection"
 	"io"
 	"iot-db/internal/datastructure"
 	"iot-db/internal/filemanager"
-	"os"
 	"sort"
+	"time"
 )
 
 type Reader struct {
-	firstIndex, secondIndex, dataFile *os.File
+	*filemanager.FileManager
+	Cache *collection.Cache
 }
 
-func OpenDataFile(path, name string) (*os.File, *os.File, *os.File, error) {
-	firstIndex, err := os.Open(fmt.Sprintf("%s/%s.first_index", path, name))
+func NewReader(f *filemanager.FileManager) (*Reader, error) {
+	c, err := collection.NewCache(time.Minute, collection.WithLimit(10000))
 	if err != nil {
-		return nil, nil, nil, err
+		panic(err)
 	}
-	secondIndex, err := os.Open(fmt.Sprintf("%s/%s.second_index", path, name))
-	if err != nil {
-		_ = firstIndex.Close()
-		return nil, nil, nil, err
-	}
-	dataFile, err := os.Open(fmt.Sprintf("%s/%s.data", path, name))
-	if err != nil {
-		_ = firstIndex.Close()
-		_ = secondIndex.Close()
-		return nil, nil, nil, err
-	}
-	return firstIndex, secondIndex, dataFile, nil
-}
 
-func NewReader(f *filemanager.File) (*Reader, error) {
 	return &Reader{
-		firstIndex:  f.FirstIndex,
-		secondIndex: f.SecondIndex,
-		dataFile:    f.DataFile,
+		FileManager: f,
+		Cache:       c,
 	}, nil
+}
+
+func (r *Reader) Query1(did, start, end int64) ([]*datastructure.Data, error) {
+
+	//
+
+	return nil, nil
 }
 
 func (r *Reader) ReadSecondIndex() (ret []datastructure.SecondIndexMeta) {
@@ -116,6 +109,12 @@ func (r *Reader) Query(did int64, start, end int64) ([]*datastructure.Data, erro
 	search := sort.Search(len(secondIndex), func(i int) bool {
 		return secondIndex[i].DeviceId >= did
 	})
+
+	logrus.Infoln("search:", search, len(secondIndex))
+
+	if search == len(secondIndex) {
+		return nil, nil
+	}
 
 	if secondIndex[search].DeviceId != did {
 		return nil, nil

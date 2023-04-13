@@ -70,7 +70,6 @@ func (w *Writer) WriteFirstIndex() error {
 		Timestamp: w.lastTimestamp,
 		Offset:    w.lastDataFileOffset,
 	}
-	//logrus.Infof("firstIndex:%#v\n", firstIndexMeta)
 	err := firstIndexMeta.WriteFirstIndex(w.FirstIndex)
 	if err != nil {
 		return err

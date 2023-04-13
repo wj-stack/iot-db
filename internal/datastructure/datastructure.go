@@ -28,16 +28,16 @@ type Data struct {
 type Flag byte
 
 const (
-	FLAG_ZIP     = 1 << 0
-	FLAG_COMPACT = 1 << 1
+	FlagZip     = 1 << 0
+	FlagCompact = 1 << 1
 )
 
 func (f *Flag) IsZip() bool {
-	return (*f)&FLAG_ZIP > 0
+	return (*f)&FlagZip > 0
 }
 
 func (f *Flag) IsCompact() bool {
-	return (*f)&FLAG_COMPACT > 0
+	return (*f)&FlagCompact > 0
 }
 
 func zip(body []byte) ([]byte, error) {
@@ -60,15 +60,6 @@ func unzip(body []byte) ([]byte, error) {
 }
 
 func (d *Data) Write(writer io.Writer) (int64, error) {
-	//if d.Flag.IsZip() {
-	//	var err error
-	//	d.Body, err = zip(d.Body)
-	//	if err != nil {
-	//		return 0, err
-	//	}
-	//	d.Length = int32(len(d.Body))
-	//}
-
 	err := binary.Write(writer, binary.BigEndian, d.DeviceId)
 	if err != nil {
 		return 0, err
@@ -124,14 +115,6 @@ func (d *Data) Read(r io.Reader) error {
 		return err
 	}
 
-	//if d.Flag.IsZip() {
-	//	var err error
-	//	d.Body, err = unzip(d.Body)
-	//	if err != nil {
-	//		return err
-	//	}
-	//	d.Length = int32(len(d.Body))
-	//}
 	return nil
 }
 
