@@ -1,33 +1,22 @@
 package compactor
 
 import (
+	"errors"
 	"github.com/chen3feng/stl4go"
 	"github.com/sirupsen/logrus"
 	"iot-db/internal/datastructure"
 	"iot-db/internal/filemanager"
 	"iot-db/internal/shardgroup"
 	"iot-db/internal/writer"
-	"os"
 	"sort"
 	"time"
 )
-
-var path = "/home/wyatt/code/iot-db/data"
-
-func SetWorkspace(s string) {
-	path = s
-}
 
 type Task struct {
 	CurrentShardGroupId   []string // directories waiting to be merged
 	NextShardGroupId      int      // merged shard group id
 	CurrentShardGroupSize int64
 	NextShardGroupSize    int
-}
-
-type FileFd struct {
-	FirstIndex, SecondIndex, DataFile *os.File
-	Path                              string
 }
 
 type Compactor struct {
@@ -47,20 +36,12 @@ func (c *Compactor) Compact(index int) error {
 		int(shardgroup.TimestampConvertShardId(time.Now().UnixNano()-x*shardgroup.ShardGroupSize[index], shardgroup.ShardGroupSize[index]))) // max shard id
 
 	// empty dir or too small
-	if len(fileList) < 2 {
-		logrus.Infoln("no compact...")
-		return nil
-	}
+	//if len(fileList) < 2 {
+	//	logrus.Infoln("no compact...", len(fileList))
+	//	return nil
+	//}
+
 	for id, i := range fileList {
-		target := filemanager.NewFileName(int(shardgroup.ShardGroupSize[index+1]), id, 0, 0, int(time.Now().UnixNano()))
-		file, err := c.FileManager.CreateTempFile(target)
-		if err != nil {
-			return err
-		}
-		w, err := writer.NewWriter(file)
-		if err != nil {
-			return err
-		}
 
 		var files []*filemanager.File
 		// open files
@@ -73,8 +54,31 @@ func (c *Compactor) Compact(index int) error {
 		}
 		logrus.Infoln("merge ->", id, "len:", len(i))
 
+	Start:
+		target := filemanager.NewFileName(int(shardgroup.ShardGroupSize[index+1]), id, 0, 0, int(time.Now().UnixNano()))
+		file, err := c.FileManager.CreateTempFile(target)
+		if err != nil {
+			return err
+		}
+		w, err := writer.NewWriter(file)
+		if err != nil {
+			return err
+		}
+
 		// merge
 		err = merge(files, w)
+
+		if errors.Is(err, BigError) {
+			// mv tmp -> data
+			logrus.Infoln("too big... create new file...")
+			err = c.Rename(target)
+			if err != nil {
+				return err
+			}
+			goto Start
+
+		}
+
 		if err != nil {
 			return err
 		}
@@ -94,19 +98,19 @@ func (c *Compactor) Compact(index int) error {
 		}
 
 		// remove
-		for _, name := range i {
-			func(name string) {
-				for {
-					err := c.Del(name)
-					if err != nil {
-						logrus.Warning(err)
-						time.Sleep(time.Second * 1)
-						continue
-					}
-					break
-				}
-			}(name)
-		}
+		//for _, name := range i {
+		//	func(name string) {
+		//		for {
+		//			err := c.Del(name)
+		//			if err != nil {
+		//				logrus.Warning(err)
+		//				time.Sleep(time.Second * 1)
+		//				continue
+		//			}
+		//			break
+		//		}
+		//	}(name)
+		//}
 	}
 	return nil
 }
@@ -122,6 +126,8 @@ type TimestampHeap struct {
 	FdIndex int
 	Count   int
 }
+
+var BigError = errors.New("too big")
 
 func merge(files []*filemanager.File, w *writer.Writer) error {
 	var items []DeviceHeap
@@ -165,6 +171,10 @@ func merge(files []*filemanager.File, w *writer.Writer) error {
 		}
 		args = append(args, items[j])
 		j++
+
+		if w.DataFileOffset > 1e9 {
+			return BigError
+		}
 	}
 	// commit
 	if len(args) > 0 {
@@ -210,7 +220,7 @@ func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w 
 	//logrus.Traceln("size:", size)
 
 	// 计算阈值,用于划分first_index
-	threshold := size / datastructure.SampleSizePerShardGroup
+	threshold := int(float64(size) * 0.01)
 	if threshold == 0 {
 		threshold = 1
 	}

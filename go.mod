@@ -4,6 +4,7 @@ go 1.19
 
 require (
 	github.com/chen3feng/stl4go v0.1.2-0.20230115114023-a5a5c918d876
+	github.com/dablelv/go-huge-util v0.0.37
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/pierrec/lz4/v4 v4.1.17
 	github.com/sirupsen/logrus v1.6.0
@@ -16,7 +17,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
-	github.com/dablelv/go-huge-util v0.0.37 // indirect
 	github.com/fatih/color v1.15.0 // indirect
 	github.com/felixge/fgprof v0.9.3 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect

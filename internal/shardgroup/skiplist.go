@@ -87,8 +87,7 @@ func (l *DeviceList) dump(file *filemanager.File) error {
 	if err != nil {
 		return err
 	}
-
-	threshold := l.list.Size() / datastructure.SampleSizePerShardGroup
+	threshold := int(float64(l.list.Size()) * 0.1)
 	if threshold == 0 {
 		threshold = 1
 	}

@@ -13,16 +13,14 @@ var ShardGroupSize = []int64{int64(time.Hour),
 	int64(time.Hour * 24),
 	int64(time.Hour * 24 * 7),
 	int64(time.Hour * 24 * 30),
-	int64(time.Hour * 24 * 90),
-	int64(time.Hour * 24 * 180)}
+}
 
 // 五分钟一条数据
 var SampleSizePerShardGroup = []int64{1,
 	5,
 	25,
 	15,
-	30,
-	int64(time.Hour * 24 * 180)}
+	30}
 
 type ShardGroupId int64
 

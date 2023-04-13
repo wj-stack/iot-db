@@ -13,7 +13,7 @@ type Writer struct {
 	size                              int
 	cnt                               int
 	lastTimestamp                     int64
-	dataFileOffset                    int64
+	DataFileOffset                    int64
 	lastDataFileOffset                int64
 	firstFileOffset                   int64
 	lastFirstFileOffset               int64
@@ -28,7 +28,7 @@ func NewWriter(file *filemanager.File) (*Writer, error) {
 		DataFile:        file.DataFile,
 		size:            0,
 		cnt:             0,
-		dataFileOffset:  0,
+		DataFileOffset:  0,
 		firstFileOffset: 0,
 		firstIndexCnt:   0,
 		start:           int64(math.MaxInt64),
@@ -50,8 +50,8 @@ func (w *Writer) WriteData(data *datastructure.Data) error {
 	w.cnt++
 	w.size++
 	w.lastTimestamp = data.Timestamp
-	w.lastDataFileOffset = w.dataFileOffset
-	w.dataFileOffset += n
+	w.lastDataFileOffset = w.DataFileOffset
+	w.DataFileOffset += n
 
 	if w.start > data.Timestamp {
 		w.start = data.Timestamp
