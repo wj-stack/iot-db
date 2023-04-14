@@ -3,6 +3,7 @@ package compactor
 import (
 	"github.com/chen3feng/stl4go"
 	"github.com/sirupsen/logrus"
+	"io"
 	"iot-db/internal/config"
 	"iot-db/internal/datastructure"
 	"iot-db/internal/filemanager"
@@ -50,12 +51,12 @@ func (c *Compactor) Compact(index int) error {
 	fileList := c.GetCompactFileList(c.Config.Core.ShardGroupSize[index], // shard size
 		c.Config.Core.ShardGroupSize[index+1],
 		int(shardgroup.TimestampConvertShardId(time.Now().UnixNano()-x*int64(c.Config.Core.ShardGroupSize[index]), int64(c.Config.Core.ShardGroupSize[index])))) // max shard id
-
+	logrus.Infoln("maxId", int(shardgroup.TimestampConvertShardId(time.Now().UnixNano()-x*int64(c.Config.Core.ShardGroupSize[index]), int64(c.Config.Core.ShardGroupSize[index]))))
 	// empty dir or too small
-	//if len(fileList) < 2 {
-	//	logrus.Infoln("no compact...", len(fileList))
-	//	return nil
-	//}
+	if len(fileList) < 2 {
+		logrus.Infoln("no compact...", len(fileList))
+		return nil
+	}
 
 	logrus.Infoln("compact", fileList)
 
@@ -81,11 +82,20 @@ func (c *Compactor) Compact(index int) error {
 				if err != nil {
 					break
 				}
+				_, err = fd.FirstIndex.Seek(second.Offset, io.SeekStart)
+				if err != nil {
+					return err
+				}
+				header, err := writer.ReadFirstIndexHeader(fd.FirstIndex)
+				if err != nil {
+					return err
+				}
 
 				items = append(items, DeviceHeap{
 					DeviceId: int(second.DeviceId),
 					Count:    int(second.Size),
 					FdIndex:  idx,
+					Header:   header,
 				})
 
 			}
@@ -111,7 +121,7 @@ func (c *Compactor) Compact(index int) error {
 		for rIdx < len(items) {
 			if items[rIdx].DeviceId != items[lIdx].DeviceId {
 				// commit
-				err := mergeByTimeStamp(files, args, items[lIdx].DeviceId, w)
+				err := mergeByTimeStamp(files, args, items[lIdx].DeviceId, w, items[lIdx].Header)
 				if err != nil {
 					return err
 				}
@@ -138,7 +148,7 @@ func (c *Compactor) Compact(index int) error {
 		}
 		// commit
 		if len(args) > 0 {
-			err := mergeByTimeStamp(files, args, items[lIdx].DeviceId, w)
+			err := mergeByTimeStamp(files, args, items[lIdx].DeviceId, w, items[lIdx].Header)
 			if err != nil {
 				return err
 			}
@@ -158,7 +168,7 @@ func (c *Compactor) Compact(index int) error {
 			}
 		}
 
-		// remove
+		//remove
 		for _, name := range i {
 			func(name string) {
 				for {
@@ -180,6 +190,7 @@ type DeviceHeap struct {
 	DeviceId int
 	Count    int
 	FdIndex  int
+	Header   []byte
 }
 
 type TimestampHeap struct {
@@ -188,9 +199,7 @@ type TimestampHeap struct {
 	Count   int
 }
 
-func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w *writer.Writer) error {
-
-	//logrus.Infoln("merge did:", did)
+func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w *writer.Writer, header []byte) error {
 
 	h := stl4go.NewPriorityQueueFunc[TimestampHeap](func(a, b TimestampHeap) bool {
 		if a.Timestamp != b.Timestamp {
@@ -214,9 +223,12 @@ func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w 
 			FdIndex: item.FdIndex,
 			Count:   item.Count - 1, // 剩余长度
 		})
-
 		size += item.Count
+	}
 
+	err := w.WriteFirstIndexHeader(header)
+	if err != nil {
+		return err
 	}
 
 	// 计算阈值,用于划分first_index
@@ -273,8 +285,8 @@ func mergeByTimeStamp(files []*filemanager.File, items []DeviceHeap, did int, w 
 		}
 
 	}
-	//logrus.Traceln("unique:", cnt)
-	err := w.WriteSecondIndex(int64(did))
+
+	err = w.WriteSecondIndex(int64(did))
 	if err != nil {
 		return err
 	}

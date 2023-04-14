@@ -3,6 +3,7 @@ package shardgroup
 import (
 	"fmt"
 	"github.com/sirupsen/logrus"
+	"github.com/tidwall/wal"
 	"iot-db/internal/datastructure"
 	"iot-db/internal/filemanager"
 	"sync"
@@ -19,7 +20,8 @@ func TimestampConvertShardId(t int64, shardGroupSize int64) int64 {
 
 type Item struct {
 	*DeviceSkipList
-	UpdatedAt time.Time
+	UpdatedAt   time.Time
+	LatestWalId int
 }
 
 type Map map[int64]*Item
@@ -31,18 +33,25 @@ type ShardGroup struct {
 	FragmentSize   int64
 	MaxSize        int64
 	CurrentSize    int64
+	Wal            *wal.Log
 	mutex          sync.RWMutex
 	*filemanager.FileManager
 }
 
 func NewShardGroup(manager *filemanager.FileManager) *ShardGroup {
+	log, err := wal.Open(manager.Config.Core.Path.Wal, nil)
+	if err != nil {
+		panic(err)
+	}
+
 	var obj = &ShardGroup{
-		IMap:           Map{},
-		ItemChan:       make(chan *Item, 10),
-		ShardGroupSize: int64(time.Hour),
-		FragmentSize:   10e6 * 10,     // 100M
-		MaxSize:        10e6 * 10 * 3, // 300M
+		IMap:           Map{},                // map[ShardId]*Item
+		ItemChan:       make(chan *Item, 10), // dump chan
+		ShardGroupSize: int64(manager.Config.Core.ShardGroupSize[0]),
+		FragmentSize:   100000000, // 100M
+		MaxSize:        300000000, // 300M
 		CurrentSize:    0,
+		Wal:            log,
 		mutex:          sync.RWMutex{},
 		FileManager:    manager,
 	}
@@ -51,10 +60,43 @@ func NewShardGroup(manager *filemanager.FileManager) *ShardGroup {
 	return obj
 }
 
-func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
+func (s *ShardGroup) Insert(deviceId int64, timestamp, createdAt int64, body []byte, privateData []byte) error {
+
+	//insertRequest := pb.Request_InsertRequest{
+	//	InsertRequest: &pb.InsertRequest{
+	//		Data: &pb.Data{
+	//			Did:         deviceId,
+	//			Timestamp:   timestamp,
+	//			CreatedAt:   createdAt,
+	//			Body:        body,
+	//			PrivateData: privateData,
+	//		},
+	//	},
+	//}
+	//// write wal
+	//req := pb.Request{
+	//	Command: &insertRequest,
+	//}
+	//
+	//marshal, err := proto.Marshal(&req)
+	//if err != nil {
+	//	return err
+	//}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	//lastIndex, err := s.Wal.LastIndex()
+	//if err != nil {
+	//	return err
+	//}
+	//
+	//err = s.Wal.Write(lastIndex+1, marshal)
+	//if err != nil {
+	//	return err
+	//}
+
+	// 内存其实是只读取z
 	shardGroupId := TimestampConvertShardId(timestamp, s.ShardGroupSize)
 	item, ok := s.IMap[shardGroupId]
 	if !ok {
@@ -71,14 +113,15 @@ func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
 		Length:    int32(len(body)),
 		Flag:      0,
 		Timestamp: timestamp,
-		CreatedAt: item.UpdatedAt.UnixNano(),
+		CreatedAt: createdAt,
 		Body:      body,
-	})
+	}, privateData)
 
 	// go dump
 	if item.fileSize > s.FragmentSize {
 		s.ItemChan <- item
 		delete(s.IMap, shardGroupId)
+		s.CurrentSize -= item.fileSize
 	}
 
 	s.CurrentSize += int64(len(body))
@@ -89,6 +132,7 @@ func (s *ShardGroup) Insert(deviceId int64, timestamp int64, body []byte) {
 		s.IMap = map[int64]*Item{}
 		s.CurrentSize = 0
 	}
+
 }
 
 func (s *ShardGroup) timeoutDump() {
@@ -108,12 +152,14 @@ func (s *ShardGroup) timeoutDump() {
 	}
 }
 
-func (s *ShardGroup) clean() {
+func (s *ShardGroup) Clean() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	for k, v := range s.IMap {
 		delete(s.IMap, k)
-		s.ItemChan <- v
+		logrus.Infoln("clean", k)
+		s.dump(v)
+		//s.ItemChan <- v
 	}
 }
 

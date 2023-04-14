@@ -12,7 +12,6 @@ import (
 type DeviceSkipList struct {
 	timeList skiplist.MapI[int64, *TimeSkipList]
 	mutex    sync.RWMutex
-
 	// all device
 	startTime int64
 	endTime   int64
@@ -28,13 +27,14 @@ func NewDeviceSkipList() *DeviceSkipList {
 	}
 }
 
-func (l *DeviceSkipList) Insert(deviceId int64, data *datastructure.Data) {
+func (l *DeviceSkipList) Insert(deviceId int64, data *datastructure.Data, privateData []byte) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
 	timeList, err := l.timeList.Get(deviceId)
 	if err != nil {
 		timeList = NewTimeSkipList()
+		timeList.privateData = privateData
 		l.timeList.Insert(deviceId, timeList)
 	}
 	timeList.Insert(data.Timestamp, data)
@@ -110,6 +110,11 @@ func (l *DeviceSkipList) dump(file *filemanager.File) error {
 			return err
 		}
 
+		err = w.WriteFirstIndexHeader(timeSkipList.privateData)
+		if err != nil {
+			return err
+		}
+
 		for {
 			_, data, err := it.Next()
 			if err != nil {
@@ -144,6 +149,7 @@ type TimeSkipList struct {
 	skiplist.MapI[int64, *datastructure.Data]
 	mutex sync.RWMutex
 
+	privateData []byte
 	// just for a device
 	startTime int64
 	endTime   int64
@@ -163,7 +169,8 @@ func (l *TimeSkipList) Insert(timestamp int64, data *datastructure.Data) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	l.MapI.Insert(timestamp, data)
+	l.MapI.
+		l.MapI.Insert(timestamp, data)
 
 	if timestamp > l.endTime {
 		l.endTime = timestamp

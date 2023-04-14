@@ -3,11 +3,11 @@ core:
     data: /data/iot-db/data/data
     wal: /data/iot-db/data/wal
     rubbish: /data/iot-db/data/tmp
-  shard_group_size: [3600000000000,86400000000000,604800000000000] # 1 hour , 1day , 7day
+  shard_group_size: [86400000000000,259200000000000,432000000000000,604800000000000] # 1 day , 3 day ,5 day , 7day
   fragment_size: 100000000 #100MB memory
 
 
 compactor:
   latest_file_size: 1
-  fragment_size: [100000000,500000000,1000000000] #  100MB 500MB  1GB disk
+  fragment_size: [100000000,300000000,500000000,1000000000] #  100MB 300MB 500MB  1GB disk
 

@@ -219,6 +219,14 @@ func (fm *FileManager) Remove(name string) error {
 	if err != nil {
 		return err
 	}
+
+	path = fmt.Sprintf("%s/%010d/%010d", fm.Config.Core.Path.Data, size, id)
+	dir, _ := os.ReadDir(path)
+	if len(dir) == 0 {
+		_ = os.RemoveAll(path)
+
+	}
+
 	return nil
 }
 

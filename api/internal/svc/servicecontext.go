@@ -1,18 +1,57 @@
 package svc
 
 import (
+	"github.com/golang/protobuf/proto"
+	"github.com/tidwall/wal"
 	"iot-db/api/internal/config"
+	conf "iot-db/internal/config"
+	"iot-db/internal/filemanager"
+	"iot-db/internal/pb"
 	"iot-db/internal/shardgroup"
 )
 
 type ServiceContext struct {
 	Config     config.Config
 	ShardGroup *shardgroup.ShardGroup
+	log        *wal.Log
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
 
-	var shardGroup = shardgroup.NewShardGroup(c.Workspace)
+	manager := filemanager.NewFileManager(&conf.Default)
+
+	var shardGroup = shardgroup.NewShardGroup(manager)
+
+	log, err := wal.Open(conf.Default.Core.Path.Wal, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	firstIndex, err := log.FirstIndex()
+	if err != nil {
+		return nil
+	}
+
+	lastIndex, err := log.LastIndex()
+	if err != nil {
+		return nil
+	}
+
+	for i := firstIndex; i < lastIndex; i++ {
+		read, err := log.Read(i)
+		if err != nil {
+			panic(err)
+		}
+
+		v := pb.Data{}
+		err = proto.Unmarshal(read, &v)
+		if err != nil {
+			panic(err)
+		}
+
+		shardGroup.Insert(v.Did, v.Timestamp, v.CreatedAt, v.Body, v.PrivateData)
+	}
+
 	// read wal
 
 	// start compactor
@@ -42,5 +81,6 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	return &ServiceContext{
 		Config:     c,
 		ShardGroup: shardGroup,
+		log:        log,
 	}
 }

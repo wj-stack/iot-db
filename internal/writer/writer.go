@@ -1,6 +1,8 @@
 package writer
 
 import (
+	"encoding/binary"
+	"io"
 	"iot-db/internal/datastructure"
 	"iot-db/internal/filemanager"
 	"math"
@@ -64,6 +66,58 @@ func (w *Writer) WriteData(data *datastructure.Data) error {
 	return nil
 }
 
+func WriteFirstIndexHeader(FirstIndex io.Writer, header []byte) error {
+	err := binary.Write(FirstIndex, binary.BigEndian, int32(len(header)))
+	if err != nil {
+		return err
+	}
+	_, err = FirstIndex.Write(header)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func ReadFirstIndexHeader(FirstIndex io.Reader) ([]byte, error) {
+	var length int32
+	err := binary.Read(FirstIndex, binary.BigEndian, &length)
+	if err != nil {
+		return nil, err
+	}
+	header := make([]byte, length)
+	_, err = FirstIndex.Read(header)
+	if err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+func (w *Writer) WriteFirstIndexHeader(header []byte) error {
+	err := binary.Write(w.FirstIndex, binary.BigEndian, int32(len(header)))
+	if err != nil {
+		return err
+	}
+	_, err = w.FirstIndex.Write(header)
+	if err != nil {
+		return err
+	}
+	w.firstFileOffset += int64(4 + len(header))
+	return nil
+}
+func (w *Writer) ReadFirstIndexHeader() ([]byte, error) {
+	var length int32
+	err := binary.Read(w.FirstIndex, binary.BigEndian, &length)
+	if err != nil {
+		return nil, err
+	}
+	header := make([]byte, length)
+	_, err = w.FirstIndex.Read(header)
+	if err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
 func (w *Writer) WriteFirstIndex() error {
 	// writer first index
 	firstIndexMeta := datastructure.FirstIndexMeta{
@@ -89,7 +143,6 @@ func (w *Writer) WriteSecondIndex(did int64) error {
 		Offset:         w.lastFirstFileOffset,
 		Flag:           0,
 	}
-	//logrus.Infof("secondIndexMeta:%#v\n", secondIndexMeta)
 
 	err := secondIndexMeta.WriteSecondIndex(w.SecondIndex)
 	if err != nil {
