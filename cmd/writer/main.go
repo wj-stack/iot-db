@@ -2,52 +2,49 @@ package main
 
 import (
 	"context"
-	"github.com/golang/protobuf/proto"
 	"github.com/sirupsen/logrus"
 	dumpservice "gitlab.vidagrid.com/wyatt/dump-reader"
-	"iot-db/internal/compactor"
-	"iot-db/internal/config"
-	"iot-db/internal/filemanager"
+	"iot-db/internal/engine"
 	"iot-db/internal/pb"
-	"iot-db/internal/shardgroup"
 	"time"
 )
 
 func main() {
+
+	logrus.SetReportCaller(true)
 	service, err := dumpservice.NewService(context.Background(), &dumpservice.SolarDumpService{
 		Srv: "wj-test-0329",
 	}, "postgres://delta:Delta123@127.0.0.1:5432/meta")
 	if err != nil {
-		logrus.Fatal(err)
+		logrus.Fatal("psql", err)
 	}
-	manager := filemanager.NewFileManager(&config.Default)
-	var shardGroup = shardgroup.NewShardGroup(manager)
 
-	c := compactor.NewCompactor(manager)
+	e := engine.NewDefaultEngine()
+	logrus.Infoln(e)
 
-	go func() {
-		for {
-			for i := 0; i < len(config.Default.Core.ShardGroupSize)-1; i++ {
-				logrus.Infoln("compact:", config.Default.Core.ShardGroupSize[i], config.Default.Core.ShardGroupSize[i+1])
-				err := c.Compact(i)
-				if err != nil {
-					logrus.Fatalln(err)
-				}
-				time.Sleep(time.Second * 10)
-			}
-		}
-	}()
+	//go func() {
+	//	for {
+	//		for i := 30000; i < 50000; i++ {
+	//			t := time.Now()
+	//			key, values, err := e.Query(int64(i), 0, time.Now().UnixNano())
+	//			if err != nil {
+	//				logrus.Fatalln(err)
+	//			}
+	//			logrus.Infoln(time.Now().UnixMilli()-t.UnixMilli(), len(values), len(key))
+	//
+	//		}
+	//	}
+	//}()
 
-	logrus.SetLevel(logrus.TraceLevel)
-
+	//
 	var solarAnalyzer SolarAnalyzer
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 50; i++ {
 		message, err := service.FetchMessage()
 		if err != nil {
-			logrus.Fatal(err)
+			logrus.Fatal("fetch", err)
 		}
-
-		logrus.Infoln("message:", len(message), service.LastCommit().File, service.LastCommit().Cnt)
+		var pbData []*pb.FullData
+		logrus.Infoln("message:", len(message), service.LastCommit().File, service.LastCommit().Cnt, time.Now())
 		for _, msg := range message {
 			analyze, err := solarAnalyzer.Analyze(Message{
 				Offset:    msg.Offset,
@@ -70,37 +67,37 @@ func main() {
 					continue
 				}
 
-				k := []int64{}
-				v := []int64{}
+				var k []int32
+				var v []int64
 				for _, i := range solarData.Regs {
 					v = append(v, int64(i[1]))
-					k = append(k, int64(i[0]))
+					k = append(k, int32(i[0]))
 				}
-
-				p := &pb.Array{Arr: v}
-				marshal, err := proto.Marshal(p)
-				if err != nil {
-					logrus.Errorln(err)
-					continue
-				}
-				field := &pb.Array{Arr: k}
-				fieldMarshal, err := proto.Marshal(field)
-				if err != nil {
-					logrus.Errorln(err)
-					continue
-				}
-				shardGroup.Insert(int64(j.DeviceId), j.UpdatedAt.UnixNano(), marshal, fieldMarshal)
+				pbData = append(pbData, &pb.FullData{
+					Did:       int64(j.DeviceId),
+					Timestamp: j.UpdatedAt.UnixNano(),
+					CreatedAt: time.Now().UnixNano(),
+					Key:       k,
+					Value:     v,
+				})
+				//if int64(j.DeviceId) == 35008 {
+				//	logrus.Infoln(j, j.CreatedAt, j.UpdatedAt, string(msg.Data))
+				//}
 			}
 
 		}
-		logrus.Infoln("CurrentSize ", shardGroup.CurrentSize)
-
-		err = service.Commit(context.Background())
+		t := time.Now()
+		err = e.Insert(pbData)
 		if err != nil {
-			return
+			logrus.Fatalln(err)
 		}
+		logrus.Infoln("speed:", time.Now().UnixMilli()-t.UnixMilli(), "ms", len(pbData))
+
+		//err = service.Commit(context.Background())
+		//if err != nil {
+		//	return
+		//}
 
 	}
 
-	shardGroup.Clean()
 }

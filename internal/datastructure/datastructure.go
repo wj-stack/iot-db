@@ -118,11 +118,11 @@ func (d *Data) Read(r io.Reader) error {
 	return nil
 }
 
-const FirstIndexMetaSize = 16
+const FirstIndexMetaSize = 12
 
 type FirstIndexMeta struct {
 	Timestamp int64
-	Offset    int64
+	Offset    uint32
 }
 
 func (v *FirstIndexMeta) WriteFirstIndex(firstIndex *os.File) error {

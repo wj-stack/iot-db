@@ -81,6 +81,8 @@ func (it *Iterator[K, V]) Next() (_ K, _ V, done error) {
 type MapI[K any, V any] interface {
 	Size() int
 
+	Delete(key K)
+
 	// Insert key/value into the list.
 	// REQUIRES: nothing that compares equal to key is currently in the list.
 	Insert(key K, value V)
@@ -141,6 +143,26 @@ type Map[K any, V any] struct {
 
 	comp Comparator[K]
 	head *Node[K, V]
+}
+
+func (list *Map[K, V]) Delete(key K) {
+	prevTable := make([]*Node[K, V], list.maxHeight)
+	x := findGreaterOrEqual(list, key, prevTable)
+
+	if x != nil && list.comp.Compare(key, x.key) == 0 {
+
+		// delete
+		for i := 0; i < list.maxHeight; i++ {
+			next := prevTable[i].Next(i)
+			if next != nil {
+				prevTable[i].SetNext(i, next.Next(i))
+			}
+		}
+
+		list.size--
+
+	}
+
 }
 
 func (list *Map[K, V]) Insert(key K, value V) {

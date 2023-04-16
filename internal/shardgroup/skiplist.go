@@ -169,8 +169,7 @@ func (l *TimeSkipList) Insert(timestamp int64, data *datastructure.Data) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	l.MapI.
-		l.MapI.Insert(timestamp, data)
+	l.MapI.Insert(timestamp, data)
 
 	if timestamp > l.endTime {
 		l.endTime = timestamp

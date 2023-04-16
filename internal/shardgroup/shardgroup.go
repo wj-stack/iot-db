@@ -132,7 +132,7 @@ func (s *ShardGroup) Insert(deviceId int64, timestamp, createdAt int64, body []b
 		s.IMap = map[int64]*Item{}
 		s.CurrentSize = 0
 	}
-
+	return nil
 }
 
 func (s *ShardGroup) timeoutDump() {

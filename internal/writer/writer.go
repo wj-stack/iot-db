@@ -122,7 +122,7 @@ func (w *Writer) WriteFirstIndex() error {
 	// writer first index
 	firstIndexMeta := datastructure.FirstIndexMeta{
 		Timestamp: w.lastTimestamp,
-		Offset:    w.lastDataFileOffset,
+		Offset:    uint32(w.lastDataFileOffset),
 	}
 	err := firstIndexMeta.WriteFirstIndex(w.FirstIndex)
 	if err != nil {

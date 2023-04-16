@@ -8,27 +8,45 @@ message Array{
   repeated int64 arr = 1;
 }
 
+message IndexHeader {
+  message Index {
+    int64 deviceId = 1;
+    int64 offset = 2;
+    int64 start = 3;
+    int64 end = 4;
+ }
+  repeated Index index = 1;
+}
+
+
+message FullData{
+  int64 did = 1;
+  int64 timestamp = 2;
+  int64 createdAt = 3;
+  repeated int32 key = 4;
+  repeated int64 value = 5;
+}
+
 message Data{
   int64 did = 1;
   int64 timestamp = 2;
   int64 createdAt = 3;
-  map<int64,int64> data = 4;
-
+  repeated int64 value = 4;
 }
 
 message InsertRequest{
-    Data data = 1;
+    Data InsertData = 1;
 }
 
 message RemoveRequest{
   int64 did = 1;
   int64 start = 2;
   int64 end = 3;
+  int64 created = 4;
 }
 
 message Request{
   oneof  command {
-      InsertRequest insertRequest = 1;
-      RemoveRequest removeRequest = 2;
+      RemoveRequest removeRequest = 1;
   }
 }
