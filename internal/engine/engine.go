@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/chen3feng/stl4go"
 	"github.com/dablelv/go-huge-util/conv"
+	"github.com/gammazero/workerpool"
 	"github.com/golang/protobuf/proto"
 	"github.com/peterbourgon/diskv/v3"
 	"github.com/sirupsen/logrus"
@@ -118,213 +118,12 @@ func NewEngine(op *Optional) *Cake {
 	return obj
 }
 
-func (c *Cake) readData(reader io.Reader) (*pb.Data, error) {
-	var length uint32
-	err := binary.Read(reader, binary.BigEndian, &length)
-	if err != nil {
-		return nil, err
-
-	}
-	body := make([]byte, length)
-	_, err = reader.Read(body)
-	if err != nil {
-		return nil, err
-	}
-
-	v := pb.Data{}
-	err = proto.Unmarshal(body, &v)
-	if err != nil {
-		return nil, err
-	}
-	return &v, nil
-
-}
-
-func (c *Cake) compactWithFile(noiseFile []string, start, end int64) {
-
-	type Data struct {
-		*pb.Data
-		dataFile *os.File
-	}
-
-	var files []*File
-	defer func() {
-		for _, i := range files {
-			_ = i.close()
-		}
-	}()
-
-	fileName := fmt.Sprintf("%d_%d_%d", start, end, time.Now().UnixNano())
-
-	tempFile, err := c.createTempFile(fileName)
-	if err != nil {
-		logrus.Fatalln(err)
-	}
-
-	writer, err := NewWriter(tempFile)
-	if err != nil {
-		return
-	}
-
-	h := stl4go.NewPriorityQueueFunc[Data](func(a, b Data) bool {
-		if a.Did != b.Did {
-			return a.Did < b.Did
-		}
-		if a.Timestamp != b.Timestamp {
-			return a.Timestamp < b.Timestamp
-		}
-		return a.CreatedAt > b.CreatedAt
-	})
-
-	for _, i := range noiseFile {
-		file, err := OpenFile(c.Optional.DataFilePath, i)
-		if err != nil {
-			logrus.Fatalln(err)
-		}
-		files = append(files, file)
-		data, err := c.readData(file.DataFile)
-		if err != nil {
-			return
-		}
-		h.Push(Data{
-			Data:     data,
-			dataFile: file.DataFile,
-		})
-	}
-
-	var index []*pb.IndexHeader_Index
-	type Range struct {
-		start, end int64
-	}
-	timeRange := map[int64]*Range{}
-	offset := 0
-	lastOffset := 0
-	var did int64 = -1
-
-	var lastTimestamp int64 = -1
-	for !h.IsEmpty() {
-		v := h.Top()
-		h.Pop()
-
-		// unique
-		if v.Timestamp == lastTimestamp {
-			continue
-		}
-		lastTimestamp = v.Timestamp
-
-		if timeRange[v.Did] == nil {
-			timeRange[v.Did] = &Range{
-				start: math.MaxInt64,
-				end:   math.MinInt64,
-			}
-		}
-		if timeRange[v.Did].start > v.Timestamp {
-			timeRange[v.Did].start = v.Timestamp
-		}
-
-		if timeRange[v.Did].end < v.Timestamp {
-			timeRange[v.Did].end = v.Timestamp
-		}
-
-		if v.GetDid() != did && did != -1 {
-			index = append(index, &pb.IndexHeader_Index{
-				DeviceId: v.GetDid(),
-				Offset:   int64(lastOffset),
-				Start:    timeRange[v.Did].start,
-				End:      timeRange[v.Did].end,
-			})
-			lastOffset = offset
-		}
-		offset++
-		did = v.GetDid()
-
-		err := writer.WriteData(v.Data)
-		if err != nil {
-			logrus.Fatalln(err)
-
-		}
-
-		err = writer.WriteFirstIndex()
-		if err != nil {
-			logrus.Fatalln(err)
-
-		}
-
-		data, err := c.readData(v.dataFile)
-		if err != nil {
-			continue
-		}
-
-		h.Push(Data{
-			Data:     data,
-			dataFile: v.dataFile,
-		})
-
-	}
-
-	header := &pb.IndexHeader{
-		Index: index,
-	}
-	marshal, err := proto.Marshal(header)
-	if err != nil {
-		logrus.Fatalln(err)
-	}
-
-	// write second index head
-	err = binary.Write(tempFile.SecondIndexFile, binary.BigEndian, int32(len(marshal)))
-	if err != nil {
-		logrus.Fatalln(err)
-	}
-
-	_, err = tempFile.SecondIndexFile.Write(marshal)
-	if err != nil {
-		logrus.Fatalln(err)
-	}
-
-	logrus.Infoln("compact file:", tempFile.Name)
-	err = c.saveTempFile(tempFile)
-	if err != nil {
-		logrus.Fatalln(err)
-	}
-
-	c.closeFiles(noiseFile)
-
-	c.queryMutex.Lock()
-	defer c.queryMutex.Unlock()
-
-	for _, i := range files {
-		name := i.Name
-		go func() {
-			logrus.Infoln("try remove file", name)
-			for !c.tryRemoveFiles(name) {
-				time.Sleep(time.Second * 5)
-			}
-		}()
-	}
-
-}
-
-//func (c *Cake) compact() {
-//
-//	logrus.Infoln("compact...")
-//	for {
-//		noiseFile, start, end := c.getNoiseFile(1024 * 1024 * 100) // 100M
-//		if len(noiseFile) < 10 {
-//			logrus.Infoln("There are too few files to merge")
-//			c.closeFiles(noiseFile)
-//			time.Sleep(time.Second * 5)
-//			continue
-//		}
-//		logrus.Infoln("start compact...")
-//		c.compactWithFile(noiseFile, start, end)
-//		logrus.Infoln("stop compact...")
-//
-//		time.Sleep(time.Second * 10)
-//
-//	}
-//}
-
 func (c *Cake) Insert(data []*pb.FullData) error {
+
+	err := c.writeKey(data)
+	if err != nil {
+		return err
+	}
 	return c.insertMemory(data)
 }
 
@@ -637,18 +436,26 @@ func (c *Cake) compact(shardId int64, keys []string) {
 	dataKey := fmt.Sprintf("%d_%d_%d_data", ShardGroupSize, shardId, created)
 	indexKey := fmt.Sprintf("%d_%d_%d_index", ShardGroupSize, shardId, created)
 
-	f, err := os.CreateTemp("", indexKey)
+	indexFile, err := os.CreateTemp("", indexKey)
 	if err != nil {
 		panic(err)
 	}
 	defer func() {
-		os.Remove(f.Name())
+		os.Remove(indexFile.Name())
 	}()
 
-	pipeReader, pipeWriter, err := os.Pipe()
+	dataFile, err := os.CreateTemp("", dataKey)
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		os.Remove(dataFile.Name())
+	}()
+
+	//pipeReader, pipeWriter, err := os.Pipe()
+	//if err != nil {
+	//	panic(err)
+	//}
 
 	var pipelines []chan IndexAndKey
 	for _, key := range keys {
@@ -667,67 +474,81 @@ func (c *Cake) compact(shardId int64, keys []string) {
 	indexChan := MergeN(pipelines...)
 	logrus.Infoln("len(pipelines):", len(pipelines))
 	cnt := 0
-	go func() {
-		defer pipeWriter.Close()
-		defer f.Close()
-		defer func() {
-			for _, v := range dataStreams {
-				err := v.Close()
-				if err != nil {
-					panic(err)
-				}
+	//defer pipeWriter.Close()
+	defer indexFile.Close()
+	defer dataFile.Close()
+	defer func() {
+		for _, v := range dataStreams {
+			err := v.Close()
+			if err != nil {
+				panic(err)
 			}
-		}()
-		size := 0
+		}
+	}()
+	size := 0
+	t := time.Now()
 
-		buf := make([]byte, 1024*5)
-		for index := range indexChan {
-			cnt++
-			if int(index.Length) > len(buf) {
-				buf = make([]byte, index.Length*2)
-			}
-			//n, err := dataStreams[index.DataKey].Read(buf[:index.Length])
-			//if err != nil {
-			//	panic(err)
-			//}
-
-			if index.Timestamp != lastTimestamp || index.Did != lastDid {
-				//lastTimestamp = index.Timestamp
-				//lastDid = index.Did
-				//_, err := pipeWriter.Write(buf[:index.Length])
-				//if err != nil {
-				//	panic(err)
-				//}
-				//index := &Index{
-				//	Did:       index.Did,
-				//	Offset:    uint64(size),
-				//	Length:    uint32(n),
-				//	Timestamp: index.Timestamp,
-				//	Flag:      index.Flag,
-				//}
-				//_, err = index.Write(f)
-				//if err != nil {
-				//	panic(err)
-				//}
-				size += int(index.Length)
-			}
-
+	buf := make([]byte, 1024*5)
+	for index := range indexChan {
+		cnt++
+		if int(index.Length) > len(buf) {
+			buf = make([]byte, index.Length*2)
+		}
+		n, err := dataStreams[index.DataKey].Read(buf[:index.Length])
+		if err != nil {
+			panic(err)
 		}
 
-		logrus.Infoln("close index chan...")
-	}()
+		if index.Timestamp != lastTimestamp || index.Did != lastDid {
+			lastTimestamp = index.Timestamp
+			lastDid = index.Did
+			_, err := dataFile.Write(buf[:index.Length])
+			if err != nil {
+				panic(err)
+			}
+			index := &Index{
+				Did:       index.Did,
+				Offset:    uint64(size),
+				Length:    uint32(n),
+				Timestamp: index.Timestamp,
+				Flag:      index.Flag,
+			}
+			_, err = index.Write(indexFile)
+			if err != nil {
+				panic(err)
+			}
+			size += int(index.Length)
+		}
+
+	}
+	logrus.Infoln("write ok..", shardId, time.Now().UnixMilli()-t.UnixMilli())
+
+	logrus.Infoln("close index chan...")
 	logrus.Infoln("start compact..", shardId)
-	t := time.Now()
-	err = c.dataDisk.WriteStream(dataKey, pipeReader, false)
+	t = time.Now()
+	err = c.dataDisk.Import(dataFile.Name(), dataKey, true)
 	if err != nil {
 		panic(err)
 	}
 	// write index
-	//err = c.dataDisk.Import(f.Name(), indexKey, true)
-	//if err != nil {
-	//	panic(err)
-	//}
+	err = c.dataDisk.Import(indexFile.Name(), indexKey, true)
+	if err != nil {
+		panic(err)
+	}
 	logrus.Infoln("compact ok..", shardId, time.Now().UnixMilli()-t.UnixMilli())
+
+	for _, indexKey := range keys {
+		dataKey := indexKey[:len(indexKey)-5] + "data"
+		err := c.dataDisk.Erase(dataKey)
+		if err != nil {
+			panic(err)
+		}
+		err = c.dataDisk.Erase(indexKey)
+		if err != nil {
+			panic(err)
+		}
+
+	}
 
 }
 
@@ -845,7 +666,7 @@ type IndexAndKey struct {
 	ShardId   int64
 }
 
-func (c *Cake) Compact() ([]*pb.Data, error) {
+func (c *Cake) Compact() {
 	cancel := make(chan struct{})
 	keys := c.dataDisk.Keys(cancel)
 
@@ -859,85 +680,100 @@ func (c *Cake) Compact() ([]*pb.Data, error) {
 	}
 
 	for shardId, keys := range shardKey {
-		c.compact(shardId, keys)
+		if len(keys) > 10 {
+			c.compact(shardId, keys)
+		}
 	}
 
-	return nil, nil
 }
 
-func (c *Cake) Query(did int64, start, end int64) ([]*pb.Data, error) {
+func (c *Cake) Query(did int64, start, end int64) (chan *pb.Data, error) {
 	startShardId := toShardId(start)
 	endShardId := toShardId(end)
 	cancel := make(chan struct{})
 	keys := c.dataDisk.Keys(cancel)
+	dataChan := make(chan *pb.Data, 100)
+	wp := workerpool.New(5)
 	for key := range keys {
 		if strings.HasSuffix(key, "index") {
-			meta := strings.Split(key, "_")
-			shardId := conv.ToAny[int64](meta[1])
-			if shardId < startShardId || shardId > endShardId {
-				continue
-			}
-			readStream, err := c.dataDisk.ReadStream(key, false)
-			if err != nil {
-				return nil, err
-			}
-			var indexs []*Index
-			func() {
-				defer readStream.Close()
-				for {
-					index := &Index{}
-					err := index.Read(readStream)
-					if err != nil {
-						break
-					}
-					indexs = append(indexs, index)
+			key := key
+			wp.Submit(func() {
+				logrus.Infoln("query", key)
+				meta := strings.Split(key, "_")
+				shardId := conv.ToAny[int64](meta[1])
+				if shardId < startShardId || shardId > endShardId {
+					return
 				}
-			}()
 
-			l := sort.Search(len(indexs), func(i int) bool {
-				if int64(indexs[i].Did) != did {
-					return int64(indexs[i].Did) >= did
+				readStream, err := c.dataDisk.Read(key)
+				if err != nil {
+					return
 				}
-				return int64(indexs[i].Timestamp) >= start
-			})
-			r := sort.Search(len(indexs), func(i int) bool {
-				if int64(indexs[i].Did) != did {
-					return int64(indexs[i].Did) >= did
-				}
-				return int64(indexs[i].Timestamp) >= end
-			})
-			indexs = indexs[l:r]
-			//for _, i := range indexs {
-			//	logrus.Infoln("index", i)
-			//}
-			stream, err := c.dataDisk.ReadStream(key[:len(key)-5]+"data", false)
-			if err != nil {
-				return nil, err
-			}
-			func() {
-				defer stream.Close()
-				if len(indexs) > 0 {
-					_, err = io.CopyN(io.Discard, stream, int64(indexs[0].Offset))
-					if err != nil {
-						logrus.Fatalln(err)
-						return
-					}
-					for i := 0; i < len(indexs); i++ {
-						body := make([]byte, indexs[i].Length)
-						_, err := stream.Read(body)
+
+				t := time.Now()
+				var indexs []*Index
+				func() {
+					reader := bytes.NewReader(readStream)
+					for {
+						index := &Index{}
+						err := index.Read(reader)
 						if err != nil {
-							logrus.Fatalln(err)
+							break
+						}
+						indexs = append(indexs, index)
+					}
+				}()
+				logrus.Infoln("read index:", time.Now().UnixMilli()-t.UnixMilli())
+
+				l := sort.Search(len(indexs), func(i int) bool {
+					if int64(indexs[i].Did) != did {
+						return int64(indexs[i].Did) >= did
+					}
+					return int64(indexs[i].Timestamp) >= start
+				})
+				r := sort.Search(len(indexs), func(i int) bool {
+					if int64(indexs[i].Did) != did {
+						return int64(indexs[i].Did) >= did
+					}
+					return int64(indexs[i].Timestamp) >= end
+				})
+				indexs = indexs[l:r]
+
+				stream, err := c.dataDisk.ReadStream(key[:len(key)-5]+"data", false)
+				if err != nil {
+					return
+				}
+
+				func() {
+					defer stream.Close()
+					if len(indexs) > 0 {
+						_, err = io.CopyN(io.Discard, stream, int64(indexs[0].Offset))
+						if err != nil {
 							return
 						}
-						var v pb.Data
-						proto.Unmarshal(body, &v)
-						logrus.Infoln("data:", v)
+						for i := 0; i < len(indexs); i++ {
+							body := make([]byte, indexs[i].Length)
+							_, err := stream.Read(body)
+							if err != nil {
+								return
+							}
+							var v pb.Data
+							err = proto.Unmarshal(body, &v)
+							if err != nil {
+								return
+							}
+							dataChan <- &v
+						}
 					}
-				}
-			}()
+				}()
+			})
 		}
 	}
-	return nil, nil
+	go func() {
+		wp.StopWait()
+		close(dataChan)
+	}()
+	return dataChan, nil
 }
 
 //func (c *Cake) queryFromMemory(did int64, start, end int64) ([]*pb.Data, error) {

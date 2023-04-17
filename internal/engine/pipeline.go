@@ -1,13 +1,14 @@
 package engine
 
 import (
+	"bytes"
 	"github.com/dablelv/go-huge-util/conv"
 	"strings"
 )
 
 func (c *Cake) openIndexPipeline(key string) chan IndexAndKey {
 	indexChan := make(chan IndexAndKey, 1000)
-	stream, err := c.dataDisk.ReadStream(key, false)
+	stream, err := c.dataDisk.Read(key)
 	if err != nil {
 		panic(err)
 	}
@@ -17,10 +18,10 @@ func (c *Cake) openIndexPipeline(key string) chan IndexAndKey {
 	createdAt := conv.ToAny[int64](meta[2])
 
 	go func() {
-		defer stream.Close()
+		reader := bytes.NewReader(stream)
 		for {
 			index := Index{}
-			err := index.Read(stream)
+			err := index.Read(reader)
 			if err != nil {
 				break
 			}

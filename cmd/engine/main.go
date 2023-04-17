@@ -5,6 +5,7 @@ import (
 	"iot-db/internal/engine"
 	"net/http"
 	"net/http/pprof"
+	"time"
 )
 
 const (
@@ -20,11 +21,26 @@ func StartHTTPDebuger() {
 func main() {
 	StartHTTPDebuger()
 	e := engine.NewDefaultEngine()
-	//t := time.Now()
-	//e.Query(26754, 0, time.Now().UnixNano())
-	//logrus.Infoln(time.Now().UnixMilli() - t.UnixMilli())
-	_, err := e.Compact()
+	t := time.Now()
+	dataChan, err := e.Query(26754, 0, time.Now().UnixNano())
 	if err != nil {
-		logrus.Fatalln(err)
+		panic(err)
 	}
+	for _ = range dataChan {
+	}
+	logrus.Infoln(time.Now().UnixMilli() - t.UnixMilli())
+
+	t = time.Now()
+	dataChan, err = e.Query(26754, 0, time.Now().UnixNano())
+	if err != nil {
+		panic(err)
+	}
+	for _ = range dataChan {
+	}
+	logrus.Infoln(time.Now().UnixMilli() - t.UnixMilli())
+
+	//_, err := e.Compact()
+	//if err != nil {
+	//	logrus.Fatalln(err)
+	//}
 }
