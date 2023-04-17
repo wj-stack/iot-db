@@ -304,25 +304,25 @@ func (c *Cake) compactWithFile(noiseFile []string, start, end int64) {
 
 }
 
-func (c *Cake) compact() {
-
-	logrus.Infoln("compact...")
-	for {
-		noiseFile, start, end := c.getNoiseFile(1024 * 1024 * 100) // 100M
-		if len(noiseFile) < 10 {
-			logrus.Infoln("There are too few files to merge")
-			c.closeFiles(noiseFile)
-			time.Sleep(time.Second * 5)
-			continue
-		}
-		logrus.Infoln("start compact...")
-		c.compactWithFile(noiseFile, start, end)
-		logrus.Infoln("stop compact...")
-
-		time.Sleep(time.Second * 10)
-
-	}
-}
+//func (c *Cake) compact() {
+//
+//	logrus.Infoln("compact...")
+//	for {
+//		noiseFile, start, end := c.getNoiseFile(1024 * 1024 * 100) // 100M
+//		if len(noiseFile) < 10 {
+//			logrus.Infoln("There are too few files to merge")
+//			c.closeFiles(noiseFile)
+//			time.Sleep(time.Second * 5)
+//			continue
+//		}
+//		logrus.Infoln("start compact...")
+//		c.compactWithFile(noiseFile, start, end)
+//		logrus.Infoln("stop compact...")
+//
+//		time.Sleep(time.Second * 10)
+//
+//	}
+//}
 
 func (c *Cake) Insert(data []*pb.FullData) error {
 	return c.insertMemory(data)
@@ -383,7 +383,7 @@ func (c *Cake) insertMemory(data []*pb.FullData) error {
 					lastIndex:  0,
 					shardId:    shardId,
 				}
-				c.shardGroup[shardId] = newShardGroup()
+				c.shardGroup[shardId] = nil
 			}
 		}
 	}
@@ -587,6 +587,284 @@ func (c *Cake) dump() {
 	}
 }
 
+//func (c *Cake) compactIndex(key string, shardIndex *[]*IndexAndKey, dataStreams *[]io.ReadCloser) {
+//	meta := strings.Split(key, "_")
+//	shardId := conv.ToAny[int64](meta[1])
+//	createdAt := conv.ToAny[int64](meta[2])
+//
+//	readStream, err := c.dataDisk.ReadStream(key, false)
+//	if err != nil {
+//		panic(err)
+//	}
+//	defer func(readStream io.ReadCloser) {
+//		err := readStream.Close()
+//		if err != nil {
+//			panic(err)
+//		}
+//	}(readStream)
+//
+//	dataStream, err := c.dataDisk.ReadStream(key[:len(key)-5]+"data", false)
+//	if err != nil {
+//		panic(err)
+//	}
+//	*dataStreams = append(*dataStreams, dataStream)
+//
+//	for {
+//		index := &Index{}
+//		err := index.Read(readStream)
+//		if err != nil {
+//			break
+//		}
+//
+//		*shardIndex = append(*shardIndex, &IndexAndKey{
+//			Index:      index,
+//			DataStream: dataStream,
+//			CreatedAt:  createdAt,
+//			ShardId:    shardId,
+//		})
+//
+//	}
+//
+//}
+
+func (c *Cake) compact(shardId int64, keys []string) {
+	//var shardIndex []*IndexAndKey
+	dataStreams := map[string]io.ReadCloser{}
+
+	var lastDid uint32
+	var lastTimestamp uint64
+	created := time.Now().UnixNano()
+	dataKey := fmt.Sprintf("%d_%d_%d_data", ShardGroupSize, shardId, created)
+	indexKey := fmt.Sprintf("%d_%d_%d_index", ShardGroupSize, shardId, created)
+
+	f, err := os.CreateTemp("", indexKey)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		os.Remove(f.Name())
+	}()
+
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+
+	var pipelines []chan IndexAndKey
+	for _, key := range keys {
+		dataKey := key[:len(key)-5] + "data"
+		_, ok := dataStreams[dataKey]
+		if !ok {
+			var err error
+			dataStreams[dataKey], err = c.dataDisk.ReadStream(dataKey, false)
+			if err != nil {
+				panic(err)
+			}
+		}
+		pipelines = append(pipelines, c.openIndexPipeline(key))
+	}
+
+	indexChan := MergeN(pipelines...)
+	logrus.Infoln("len(pipelines):", len(pipelines))
+	cnt := 0
+	go func() {
+		defer pipeWriter.Close()
+		defer f.Close()
+		defer func() {
+			for _, v := range dataStreams {
+				err := v.Close()
+				if err != nil {
+					panic(err)
+				}
+			}
+		}()
+		size := 0
+
+		buf := make([]byte, 1024*5)
+		for index := range indexChan {
+			cnt++
+			if int(index.Length) > len(buf) {
+				buf = make([]byte, index.Length*2)
+			}
+			//n, err := dataStreams[index.DataKey].Read(buf[:index.Length])
+			//if err != nil {
+			//	panic(err)
+			//}
+
+			if index.Timestamp != lastTimestamp || index.Did != lastDid {
+				//lastTimestamp = index.Timestamp
+				//lastDid = index.Did
+				//_, err := pipeWriter.Write(buf[:index.Length])
+				//if err != nil {
+				//	panic(err)
+				//}
+				//index := &Index{
+				//	Did:       index.Did,
+				//	Offset:    uint64(size),
+				//	Length:    uint32(n),
+				//	Timestamp: index.Timestamp,
+				//	Flag:      index.Flag,
+				//}
+				//_, err = index.Write(f)
+				//if err != nil {
+				//	panic(err)
+				//}
+				size += int(index.Length)
+			}
+
+		}
+
+		logrus.Infoln("close index chan...")
+	}()
+	logrus.Infoln("start compact..", shardId)
+	t := time.Now()
+	err = c.dataDisk.WriteStream(dataKey, pipeReader, false)
+	if err != nil {
+		panic(err)
+	}
+	// write index
+	//err = c.dataDisk.Import(f.Name(), indexKey, true)
+	//if err != nil {
+	//	panic(err)
+	//}
+	logrus.Infoln("compact ok..", shardId, time.Now().UnixMilli()-t.UnixMilli())
+
+}
+
+//func (c *Cake) compact(shardId int64, keys []string) {
+//	var shardIndex []*IndexAndKey
+//	var dataStreams []io.ReadCloser
+//	defer func() {
+//		logrus.Infoln("close dataStreams")
+//		for _, i := range dataStreams {
+//			_ = i.Close()
+//		}
+//	}()
+//
+//	// read index and dataStream
+//	for _, key := range keys {
+//		logrus.Infoln("compactIndex", key)
+//		c.compactIndex(key, &shardIndex, &dataStreams)
+//		logrus.Infoln("compactIndex ... ok ", key)
+//	}
+//
+//	logrus.Infoln("dataStreams:", dataStreams)
+//	time.Sleep(time.Second * 10)
+//
+//	// sort index
+//	sort.Slice(shardIndex, func(i, j int) bool {
+//		if shardIndex[i].Did != shardIndex[j].Did {
+//			return shardIndex[i].Did < shardIndex[j].Did
+//		}
+//		if shardIndex[i].Timestamp != shardIndex[i].Timestamp {
+//			return shardIndex[i].Timestamp < shardIndex[i].Timestamp
+//		}
+//		return shardIndex[i].CreatedAt < shardIndex[i].CreatedAt
+//	})
+//
+//	var lastDid uint32
+//	var lastTimestamp uint64
+//	created := time.Now().UnixNano()
+//	dataKey := fmt.Sprintf("%d_%d_%d_data", ShardGroupSize, shardId, created)
+//	indexKey := fmt.Sprintf("%d_%d_%d_index", ShardGroupSize, shardId, created)
+//
+//	// dataPipe
+//	pipeReader, pipeWriter, err := os.Pipe()
+//	if err != nil {
+//		panic(err)
+//	}
+//
+//	// index file
+//	f, err := os.CreateTemp("", indexKey)
+//	if err != nil {
+//		panic(err)
+//	}
+//	defer func() {
+//		os.Remove(f.Name())
+//	}()
+//
+//	go func() {
+//		defer pipeWriter.Close()
+//		defer f.Close()
+//		size := 0
+//		logrus.Infoln("index cnt:", len(shardIndex))
+//		buf := make([]byte, 1024*5)
+//		for _, index := range shardIndex {
+//			if int(index.Length) > len(buf) {
+//				buf = make([]byte, index.Length*2)
+//			}
+//
+//			n, err := index.DataStream.Read(buf[:index.Length])
+//			if err != nil {
+//				panic(err)
+//			}
+//
+//			if index.Timestamp != lastTimestamp || index.Did != lastDid {
+//				lastTimestamp = index.Timestamp
+//				lastDid = index.Did
+//				_, err := pipeWriter.Write(buf[:n])
+//				if err != nil {
+//					panic(err)
+//				}
+//				index := &Index{
+//					Did:       index.Did,
+//					Offset:    uint64(size),
+//					Length:    uint32(n),
+//					Timestamp: index.Timestamp,
+//					Flag:      index.Flag,
+//				}
+//				_, err = index.Write(f)
+//				if err != nil {
+//					panic(err)
+//				}
+//				size += n
+//			}
+//		}
+//		logrus.Infoln("write ok..", len(shardIndex), "size", size)
+//	}()
+//	logrus.Infoln("start compact..", shardId)
+//	t := time.Now()
+//	err = c.dataDisk.WriteStream(dataKey, pipeReader, true)
+//	if err != nil {
+//		panic(err)
+//	}
+//	logrus.Infoln("compact ok..", shardId, time.Now().UnixMilli()-t.UnixMilli())
+//	// write index
+//	err = c.dataDisk.Import(f.Name(), indexKey, true)
+//	if err != nil {
+//		panic(err)
+//	}
+//
+//}
+
+type IndexAndKey struct {
+	Index
+	//DataStream io.ReadCloser
+	DataKey   string
+	CreatedAt int64
+	ShardId   int64
+}
+
+func (c *Cake) Compact() ([]*pb.Data, error) {
+	cancel := make(chan struct{})
+	keys := c.dataDisk.Keys(cancel)
+
+	shardKey := map[int64][]string{}
+	for key := range keys {
+		if strings.HasSuffix(key, "index") {
+			meta := strings.Split(key, "_")
+			shardId := conv.ToAny[int64](meta[1])
+			shardKey[shardId] = append(shardKey[shardId], key)
+		}
+	}
+
+	for shardId, keys := range shardKey {
+		c.compact(shardId, keys)
+	}
+
+	return nil, nil
+}
+
 func (c *Cake) Query(did int64, start, end int64) ([]*pb.Data, error) {
 	startShardId := toShardId(start)
 	endShardId := toShardId(end)
@@ -604,14 +882,17 @@ func (c *Cake) Query(did int64, start, end int64) ([]*pb.Data, error) {
 				return nil, err
 			}
 			var indexs []*Index
-			for {
-				index := &Index{}
-				err := index.Read(readStream)
-				if err != nil {
-					break
+			func() {
+				defer readStream.Close()
+				for {
+					index := &Index{}
+					err := index.Read(readStream)
+					if err != nil {
+						break
+					}
+					indexs = append(indexs, index)
 				}
-				indexs = append(indexs, index)
-			}
+			}()
 
 			l := sort.Search(len(indexs), func(i int) bool {
 				if int64(indexs[i].Did) != did {
@@ -626,30 +907,34 @@ func (c *Cake) Query(did int64, start, end int64) ([]*pb.Data, error) {
 				return int64(indexs[i].Timestamp) >= end
 			})
 			indexs = indexs[l:r]
-			for _, i := range indexs {
-				logrus.Infoln("index", i)
-			}
+			//for _, i := range indexs {
+			//	logrus.Infoln("index", i)
+			//}
 			stream, err := c.dataDisk.ReadStream(key[:len(key)-5]+"data", false)
 			if err != nil {
 				return nil, err
 			}
-			if len(indexs) > 0 {
-				_, err = io.CopyN(io.Discard, stream, int64(indexs[0].Offset))
-				if err != nil {
-					return nil, err
-				}
-				for i := 0; i < len(indexs); i++ {
-					body := make([]byte, indexs[i].Length)
-					_, err := stream.Read(body)
+			func() {
+				defer stream.Close()
+				if len(indexs) > 0 {
+					_, err = io.CopyN(io.Discard, stream, int64(indexs[0].Offset))
 					if err != nil {
-						return nil, err
+						logrus.Fatalln(err)
+						return
 					}
-					var v pb.Data
-					proto.Unmarshal(body, &v)
-					logrus.Infoln("data:", v)
+					for i := 0; i < len(indexs); i++ {
+						body := make([]byte, indexs[i].Length)
+						_, err := stream.Read(body)
+						if err != nil {
+							logrus.Fatalln(err)
+							return
+						}
+						var v pb.Data
+						proto.Unmarshal(body, &v)
+						logrus.Infoln("data:", v)
+					}
 				}
-			}
-
+			}()
 		}
 	}
 	return nil, nil
