@@ -3,18 +3,18 @@ package main
 import (
 	"github.com/sirupsen/logrus"
 	"iot-db/internal/compactor"
-	"iot-db/internal/config"
 	"iot-db/internal/filemanager"
 )
 
+var workspace = "/home/delta/iot-db/data"
+
 func main() {
-	manager := filemanager.NewFileManager(&config.Default)
+	logrus.SetLevel(logrus.TraceLevel)
+	manager := filemanager.NewFileManager(workspace)
+
 	c := compactor.NewCompactor(manager)
-	logrus.SetReportCaller(true)
 	err := c.Compact(0)
 	if err != nil {
-		logrus.Fatalln(err)
+		return
 	}
-
-	return
 }

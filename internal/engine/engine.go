@@ -373,6 +373,7 @@ func (c *Cake) compact(shardId int64, keys []string) {
 	if err != nil {
 		panic(err)
 	}
+
 	logrus.Infoln("compact ok..", shardId, time.Now().UnixMilli()-t.UnixMilli())
 
 	for _, indexKey := range keys {
@@ -393,7 +394,6 @@ func (c *Cake) compact(shardId int64, keys []string) {
 
 type IndexAndKey struct {
 	Index
-	//DataStream io.ReadCloser
 	DataKey   string
 	CreatedAt int64
 	ShardId   int64
@@ -470,8 +470,6 @@ func (c *Cake) Query(did int64, start, end int64) (chan *pb.Data, error) {
 				if err != nil {
 					return
 				}
-
-				//t := time.Now()
 
 				var indexs []*Index
 
