@@ -21,26 +21,22 @@ func StartHTTPDebuger() {
 func main() {
 	StartHTTPDebuger()
 	e := engine.NewDefaultEngine()
-	t := time.Now()
-	dataChan, err := e.Query(26754, 0, time.Now().UnixNano())
-	if err != nil {
-		panic(err)
-	}
-	for _ = range dataChan {
-	}
-	logrus.Infoln(time.Now().UnixMilli() - t.UnixMilli())
 
-	t = time.Now()
-	dataChan, err = e.Query(26754, 0, time.Now().UnixNano())
-	if err != nil {
-		panic(err)
+	for i := time.Now(); i.After(time.Now().AddDate(-1, 0, 0)); i = i.Add(-time.Hour * 24 * 7) {
+		t := time.Now()
+		dataChan, err := e.Query(26754, i.Add(-time.Hour*24*7).UnixNano(), i.UnixNano())
+		if err != nil {
+			panic(err)
+		}
+		cnt := 0
+		for _ = range dataChan {
+			cnt++
+			//logrus.Infoln(data)
+		}
+		if cnt > 0 {
+			logrus.Infoln("query", i.Add(-time.Hour*24*7), i)
+			logrus.Infoln(time.Now().UnixMilli()-t.UnixMilli(), "cnt:", cnt)
+		}
 	}
-	for _ = range dataChan {
-	}
-	logrus.Infoln(time.Now().UnixMilli() - t.UnixMilli())
 
-	//_, err := e.Compact()
-	//if err != nil {
-	//	logrus.Fatalln(err)
-	//}
 }

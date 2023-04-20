@@ -13,6 +13,8 @@ type Index struct {
 	Flag      byte   // 1
 }
 
+const IndexSize = 4 + 8 + 4 + 8 + 1
+
 func (d *Index) Write(writer io.Writer) (int64, error) {
 	err := binary.Write(writer, binary.BigEndian, d.Did)
 	if err != nil {

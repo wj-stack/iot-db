@@ -21,7 +21,12 @@ func main() {
 
 	e := engine.NewDefaultEngine()
 	logrus.Infoln(e)
-
+	go func() {
+		for {
+			e.Compact()
+			time.Sleep(time.Second * 10)
+		}
+	}()
 	//go func() {
 	//	for {
 	//		for i := 30000; i < 50000; i++ {
@@ -38,7 +43,7 @@ func main() {
 
 	//
 	var solarAnalyzer SolarAnalyzer
-	for i := 0; i < 50; i++ {
+	for {
 		message, err := service.FetchMessage()
 		if err != nil {
 			logrus.Fatal("fetch", err)
@@ -93,10 +98,10 @@ func main() {
 		}
 		logrus.Infoln("speed:", time.Now().UnixMilli()-t.UnixMilli(), "ms", len(pbData))
 
-		//err = service.Commit(context.Background())
-		//if err != nil {
-		//	return
-		//}
+		err = service.Commit(context.Background())
+		if err != nil {
+			return
+		}
 
 	}
 
