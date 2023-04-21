@@ -13,35 +13,14 @@ func main() {
 
 	logrus.SetReportCaller(true)
 	service, err := dumpservice.NewService(context.Background(), &dumpservice.SolarDumpService{
-		Srv: "wj-test-0329",
+		Srv: "solar_cake",
 	}, "postgres://delta:Delta123@127.0.0.1:5432/meta")
 	if err != nil {
 		logrus.Fatal("psql", err)
 	}
 
 	e := engine.NewDefaultEngine()
-	logrus.Infoln(e)
-	go func() {
-		for {
-			e.Compact()
-			time.Sleep(time.Second * 10)
-		}
-	}()
-	//go func() {
-	//	for {
-	//		for i := 30000; i < 50000; i++ {
-	//			t := time.Now()
-	//			key, values, err := e.Query(int64(i), 0, time.Now().UnixNano())
-	//			if err != nil {
-	//				logrus.Fatalln(err)
-	//			}
-	//			logrus.Infoln(time.Now().UnixMilli()-t.UnixMilli(), len(values), len(key))
-	//
-	//		}
-	//	}
-	//}()
 
-	//
 	var solarAnalyzer SolarAnalyzer
 	for {
 		message, err := service.FetchMessage()
@@ -96,7 +75,7 @@ func main() {
 		if err != nil {
 			logrus.Fatalln(err)
 		}
-		logrus.Infoln("speed:", time.Now().UnixMilli()-t.UnixMilli(), "ms", len(pbData))
+		logrus.Infoln("speed:", time.Now().UnixMilli()-t.UnixMilli(), "ms", len(pbData), "Size:", e.Size())
 
 		err = service.Commit(context.Background())
 		if err != nil {

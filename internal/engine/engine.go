@@ -9,36 +9,23 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/peterbourgon/diskv/v3"
 	"github.com/sirupsen/logrus"
-	"github.com/zeromicro/go-zero/core/collection"
 	"golang.org/x/exp/mmap"
 	"io"
 	"iot-db/internal/pb"
-	"iot-db/internal/shardgroup"
 	"iot-db/pkg/skiplist"
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
-
-type Item struct {
-	*shardgroup.DeviceSkipList
-	LatestIndexId int
-}
-
-type ShardGroup map[int64]*Item
 
 type Cake struct {
 	size           int
 	shardGroup     map[int64]skiplist.MapI[*pb.Data, struct{}]
 	shardGroupChan chan dump
-	queryMutex     sync.RWMutex
-	fileMutex      sync.RWMutex
-	fieldDisk      *diskv.Diskv
-	dataDisk       *diskv.Diskv
+	fieldDisk      *diskv.Diskv // key
+	dataDisk       *diskv.Diskv // value
 	Optional       *Optional
-	IndexCache     *collection.Cache
 }
 
 type dump struct {
@@ -50,10 +37,6 @@ type dump struct {
 type Optional struct {
 	FieldCachePath string
 	DataCachePath  string
-	WalPath        string
-	CmdWalPath     string
-	TempFilePath   string
-	DataFilePath   string
 }
 
 func newShardGroup() skiplist.MapI[*pb.Data, struct{}] {
@@ -62,12 +45,8 @@ func newShardGroup() skiplist.MapI[*pb.Data, struct{}] {
 
 func NewDefaultEngine() *Cake {
 	return NewEngine(&Optional{
-		FieldCachePath: "/data/iot-db/data/cache/files",
-		DataCachePath:  "/data/iot-db/data/cache/data",
-		WalPath:        "/data/iot-db/data/wal/data",
-		CmdWalPath:     "/data/iot-db/data/wal/cmd",
-		TempFilePath:   "/data/iot-db/data/tmp",
-		DataFilePath:   "/data/iot-db/data/data",
+		FieldCachePath: "/data/iot-db/data/field",
+		DataCachePath:  "/data/iot-db/data/data",
 	})
 }
 
@@ -81,11 +60,6 @@ func NewEngine(op *Optional) *Cake {
 
 	_ = os.MkdirAll(op.FieldCachePath, 0777)
 	_ = os.MkdirAll(op.DataCachePath, 0777)
-	_ = os.MkdirAll(op.WalPath, 0777)
-	_ = os.MkdirAll(op.CmdWalPath, 0777)
-	_ = os.MkdirAll(op.CmdWalPath, 0777)
-	_ = os.MkdirAll(op.TempFilePath, 0777)
-	_ = os.MkdirAll(op.DataFilePath, 0777)
 
 	// 存储寄存器信息
 	fieldDisk := diskv.New(diskv.Options{
@@ -106,35 +80,24 @@ func NewEngine(op *Optional) *Cake {
 		CacheSizeMax: 0,
 	})
 
-	cache, err := collection.NewCache(time.Minute*10, collection.WithLimit(1000))
-	if err != nil {
-		panic(err)
-	}
-
 	obj := &Cake{
 		size:           0,
 		shardGroup:     map[int64]skiplist.MapI[*pb.Data, struct{}]{},
 		shardGroupChan: make(chan dump, 10),
-		queryMutex:     sync.RWMutex{},
-		fileMutex:      sync.RWMutex{},
 		fieldDisk:      fieldDisk,
 		dataDisk:       dataDisk,
 		Optional:       op,
-		IndexCache:     cache,
 	}
 
 	go obj.dump()
-	//go func() {
-	//	for {
-	//		obj.Compact()
-	//		time.Sleep(time.Second * 10)
-	//	}
-	//}()
+
 	return obj
+}
+func (c *Cake) Size() int {
+	return c.size
 }
 
 func (c *Cake) Insert(data []*pb.FullData) error {
-
 	err := c.writeKey(data)
 	if err != nil {
 		return err
@@ -169,7 +132,6 @@ func toShardId(timestamp int64) int64 {
 }
 
 func (c *Cake) insertMemory(data []*pb.FullData) error {
-
 	for _, data := range data {
 		shardId := toShardId(data.Timestamp)
 		s, ok := c.shardGroup[shardId]
@@ -187,7 +149,8 @@ func (c *Cake) insertMemory(data []*pb.FullData) error {
 		c.size += len(data.Value)*4 + 12
 	}
 
-	if c.size > 1e6*20 {
+	// ~= 100 M
+	if c.size > 1e6*200 {
 		c.size = 0
 		for shardId := range c.shardGroup {
 			if c.shardGroup[shardId].Size() > 0 {
@@ -209,14 +172,28 @@ func (c *Cake) dump() {
 	for msg := range c.shardGroupChan {
 		shardGroup := msg.shardGroup
 
-		logrus.Infoln("size:", shardGroup.Size())
+		t := time.Now().UnixNano()
+		dataKey := fmt.Sprintf("%d_%d_%d_data", ShardGroupSize, msg.shardId, t)
+		indexKey := fmt.Sprintf("%d_%d_%d_index", ShardGroupSize, msg.shardId, t)
+		func() {
+			indexFile, err := os.CreateTemp("", indexKey)
+			if err != nil {
+				logrus.Fatalln(err)
+			}
+			defer func() {
+				indexFile.Close()
+				os.Remove(indexFile.Name())
+			}()
 
-		dataReader, dataWriter, err := os.Pipe()
-		if err != nil {
-			logrus.Fatalln(err)
-		}
-		var indexs []*Index
-		go func() {
+			dataFile, err := os.CreateTemp("", dataKey)
+			if err != nil {
+				logrus.Fatalln(err)
+			}
+			defer func() {
+				dataFile.Close()
+				os.Remove(dataFile.Name())
+			}()
+
 			it, err := shardGroup.Iterator()
 			if err != nil {
 				return
@@ -234,7 +211,7 @@ func (c *Cake) dump() {
 					logrus.Fatalln(err)
 				}
 
-				n, err := dataWriter.Write(marshal)
+				n, err := dataFile.Write(marshal)
 				if err != nil {
 					logrus.Fatalln(err)
 				}
@@ -246,40 +223,23 @@ func (c *Cake) dump() {
 					Timestamp: uint64(data.Timestamp),
 					Flag:      0,
 				}
-				indexs = append(indexs, index)
-
-				offset += uint64(n)
-			}
-			_ = dataWriter.Close()
-		}()
-
-		t := time.Now().UnixNano()
-		dataKey := fmt.Sprintf("%d_%d_%d_data", ShardGroupSize, msg.shardId, t)
-		indexKey := fmt.Sprintf("%d_%d_%d_index", ShardGroupSize, msg.shardId, t)
-		logrus.Infoln("dump", dataKey)
-
-		err = c.dataDisk.WriteStream(dataKey, dataReader, false)
-		if err != nil {
-			logrus.Fatalln(err)
-		}
-
-		indexReader, indexWriter, err := os.Pipe()
-		if err != nil {
-			logrus.Fatalln(err)
-		}
-		go func() {
-			for _, i := range indexs {
-				_, err := i.Write(indexWriter)
+				_, err = index.Write(indexFile)
 				if err != nil {
 					logrus.Fatalln(err)
 				}
+				offset += uint64(n)
 			}
-			_ = indexWriter.Close()
+			logrus.Infoln("size:", shardGroup.Size())
+			err = c.dataDisk.Import(dataFile.Name(), dataKey, true)
+			if err != nil {
+				logrus.Fatalln(err)
+			}
+			err = c.dataDisk.Import(indexFile.Name(), indexKey, true)
+			if err != nil {
+				logrus.Fatalln(err)
+			}
 		}()
-		err = c.dataDisk.WriteStream(indexKey, indexReader, false)
-		if err != nil {
-			logrus.Fatalln(err)
-		}
+		logrus.Infoln("dump", indexKey, dataKey)
 
 	}
 }
