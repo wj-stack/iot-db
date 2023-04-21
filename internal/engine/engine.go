@@ -9,6 +9,8 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/peterbourgon/diskv/v3"
 	"github.com/sirupsen/logrus"
+	"github.com/zeromicro/go-zero/core/collection"
+	"golang.org/x/exp/mmap"
 	"io"
 	"iot-db/internal/pb"
 	"iot-db/internal/shardgroup"
@@ -36,6 +38,7 @@ type Cake struct {
 	fieldDisk      *diskv.Diskv
 	dataDisk       *diskv.Diskv
 	Optional       *Optional
+	IndexCache     *collection.Cache
 }
 
 type dump struct {
@@ -93,7 +96,7 @@ func NewEngine(op *Optional) *Cake {
 			}
 			return []string{s[:2]}
 		},
-		CacheSizeMax: 1024 * 1024 * 200,
+		CacheSizeMax: 1024 * 1024 * 20,
 	})
 
 	// 存储寄存器值信息
@@ -103,13 +106,21 @@ func NewEngine(op *Optional) *Cake {
 		CacheSizeMax: 0,
 	})
 
+	cache, err := collection.NewCache(time.Minute*10, collection.WithLimit(1000))
+	if err != nil {
+		panic(err)
+	}
+
 	obj := &Cake{
 		size:           0,
 		shardGroup:     map[int64]skiplist.MapI[*pb.Data, struct{}]{},
 		shardGroupChan: make(chan dump, 10),
+		queryMutex:     sync.RWMutex{},
+		fileMutex:      sync.RWMutex{},
 		fieldDisk:      fieldDisk,
 		dataDisk:       dataDisk,
 		Optional:       op,
+		IndexCache:     cache,
 	}
 
 	go obj.dump()
@@ -466,31 +477,58 @@ func (c *Cake) Query(did int64, start, end int64) (chan *pb.Data, error) {
 					return
 				}
 
-				readStream, err := c.dataDisk.Read(key)
+				t := time.Now()
+
+				//readStream, err := c.dataDisk.Read(key)
+				//if err != nil {
+				//	return
+				//}
+				path := c.Optional.DataCachePath + "/" + strings.Join(Transform(key), "/") + "/" + key
+				at, err := mmap.Open(path)
 				if err != nil {
+					//logrus.Infoln(err)
 					return
 				}
+				defer at.Close()
+				//_ = at.Close()
+				//at.Len()
+
+				//logrus.Infoln("read index ", time.Now().UnixMilli()-t.UnixMilli())
+				//logrus.Infoln("open index file", path, "len:", at.Len())
+
+				t = time.Now()
 
 				var indexs []*Index
 
-				l := sort.Search(len(readStream)/IndexSize, func(i int) bool {
+				l := sort.Search(at.Len()/IndexSize, func(i int) bool {
 
-					reader := bytes.NewReader(readStream[i*IndexSize : (i+1)*IndexSize])
+					buff := make([]byte, IndexSize)
+					_, err := at.ReadAt(buff, int64(i*IndexSize))
+					if err != nil {
+						logrus.Errorln(err)
+						return false
+					}
+					reader := bytes.NewReader(buff)
 
 					index := &Index{}
 					err = index.Read(reader)
 					if err != nil {
 						return false
 					}
-
+					//logrus.Infoln("index:", index)
 					if int64(index.Did) != did {
 						return int64(index.Did) >= did
 					}
 					return int64(index.Timestamp) >= start
 				})
-				r := sort.Search(len(readStream)/IndexSize, func(i int) bool {
-
-					reader := bytes.NewReader(readStream[i*IndexSize : (i+1)*IndexSize])
+				r := sort.Search(at.Len()/IndexSize, func(i int) bool {
+					buff := make([]byte, IndexSize)
+					_, err := at.ReadAt(buff, int64(i*IndexSize))
+					if err != nil {
+						logrus.Errorln(err)
+						return false
+					}
+					reader := bytes.NewReader(buff)
 					index := &Index{}
 					err = index.Read(reader)
 					if err != nil {
@@ -502,8 +540,13 @@ func (c *Cake) Query(did int64, start, end int64) (chan *pb.Data, error) {
 					}
 					return int64(index.Timestamp) > end
 				})
-
-				reader := bytes.NewReader(readStream[l*IndexSize : (r)*IndexSize])
+				buff := make([]byte, int64((r-l)*IndexSize))
+				_, err = at.ReadAt(buff, int64((r-l)*IndexSize))
+				if err != nil {
+					logrus.Errorln(err, int64((r-l)*IndexSize))
+					return
+				}
+				reader := bytes.NewReader(buff)
 				for i := l; i < r; i++ {
 					index := &Index{}
 					err = index.Read(reader)
@@ -512,11 +555,16 @@ func (c *Cake) Query(did int64, start, end int64) (chan *pb.Data, error) {
 					}
 					indexs = append(indexs, index)
 				}
+
+				//logrus.Infoln("search index", time.Now().UnixMilli()-t.UnixMilli(), "index cnt:", r-l)
+				t = time.Now()
+
 				stream, err := c.dataDisk.ReadStream(key[:len(key)-5]+"data", false)
 				if err != nil {
+					logrus.Errorln(err)
 					return
 				}
-
+				//logrus.Infoln(key, len(indexs))
 				func() {
 					defer stream.Close()
 					if len(indexs) > 0 {
@@ -539,6 +587,9 @@ func (c *Cake) Query(did int64, start, end int64) (chan *pb.Data, error) {
 						}
 					}
 				}()
+
+				logrus.Infoln("read data", time.Now().UnixMilli()-t.UnixMilli())
+
 			})
 		}
 	}

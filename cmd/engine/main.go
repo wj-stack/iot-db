@@ -22,26 +22,24 @@ func main() {
 	StartHTTPDebuger()
 	e := engine.NewDefaultEngine()
 	t := time.Now()
-	i := time.Now()
-	dataChan, _ := e.Query(26754, i.Add(-time.Hour*24*7).UnixNano(), i.UnixNano())
-	for _ = range dataChan {
+
+	for i := time.Now(); i.After(time.Now().AddDate(-1, 0, 0)); i = i.Add(-time.Hour * 24 * 7) {
+		t := time.Now()
+		dataChan, err := e.Query(26754, i.Add(-time.Hour*24*7).UnixNano(), i.UnixNano())
+		if err != nil {
+			panic(err)
+		}
+		cnt := 0
+		for data := range dataChan {
+			cnt++
+			logrus.Infoln(data)
+		}
+		if cnt > 0 {
+			logrus.Infoln("query", i.Add(-time.Hour*24*7), i)
+			logrus.Infoln(time.Now().UnixMilli()-t.UnixMilli(), "cnt:", cnt)
+		}
+		time.Sleep(time.Second)
 	}
-	//for i := time.Now(); i.After(time.Now().AddDate(-1, 0, 0)); i = i.Add(-time.Hour * 24 * 7) {
-	//	t := time.Now()
-	//	dataChan, err := e.Query(26754, i.Add(-time.Hour*24*7).UnixNano(), i.UnixNano())
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//	cnt := 0
-	//	for _ = range dataChan {
-	//		cnt++
-	//		//logrus.Infoln(data)
-	//	}
-	//	if cnt > 0 {
-	//		logrus.Infoln("query", i.Add(-time.Hour*24*7), i)
-	//		logrus.Infoln(time.Now().UnixMilli()-t.UnixMilli(), "cnt:", cnt)
-	//	}
-	//}
 	logrus.Infoln(time.Now().UnixMilli() - t.UnixMilli())
 
 }

@@ -13,6 +13,14 @@ type Index struct {
 	Flag      byte   // 1
 }
 
+type IndexCache struct {
+	Did    uint32 // 4
+	Start  uint64 // 8
+	End    uint64 // 4
+	Offset uint64 // 8
+	Flag   byte   // 1
+}
+
 const IndexSize = 4 + 8 + 4 + 8 + 1
 
 func (d *Index) Write(writer io.Writer) (int64, error) {
