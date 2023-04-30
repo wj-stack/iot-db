@@ -7,143 +7,185 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/mmap"
-	"io"
 	"iot-db/internal/pb"
 	"sort"
 	"strings"
-	"time"
 )
 
 func (c *Cake) Query(did int64, start, end int64) (chan *pb.Data, error) {
 	startShardId := toShardId(start)
 	endShardId := toShardId(end)
-	cancel := make(chan struct{})
-	keys := c.dataDisk.Keys(cancel)
 	dataChan := make(chan *pb.Data, 1000)
-	wp := workerpool.New(200)
-	for key := range keys {
+	wp := workerpool.New(1)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for key := range c.Keys {
 		if strings.HasSuffix(key, "index") {
 			key := key
 			wp.Submit(func() {
-				//logrus.Infoln("query", key)
 				meta := strings.Split(key, "_")
 				shardId := conv.ToAny[int64](meta[1])
 				if shardId < startShardId || shardId > endShardId {
 					return
 				}
-
-				t := time.Now()
+				//logrus.Infoln("key:", key)
 
 				//readStream, err := c.dataDisk.Read(key)
 				//if err != nil {
 				//	return
 				//}
-				path := c.Optional.DataCachePath + "/" + strings.Join(Transform(key), "/") + "/" + key
-				at, err := mmap.Open(path)
+				//t := time.Now()
+
+				//c.BigCache.Get
+				indexCacheKey := key + conv.ToAny[string](did)
+				//logrus.Infoln("read indexCacheKey:", indexCacheKey)
+				//var indexs []Index
+				buf, err := c.BigCache.Get(indexCacheKey)
 				if err != nil {
-					//logrus.Infoln(err)
+					// read did index
+					c.ReadFile(key, func(at *mmap.ReaderAt) {
+
+						l := sort.Search(at.Len()/IndexSize, func(i int) bool {
+
+							buff := make([]byte, IndexSize)
+							_, err := at.ReadAt(buff, int64(i*IndexSize))
+							if err != nil {
+								logrus.Errorln(err)
+								return false
+							}
+							reader := bytes.NewReader(buff)
+
+							index := &Index{}
+							err = index.Read(reader)
+							if err != nil {
+								return false
+							}
+							//logrus.Infoln("index:", index)
+							//if int64(index.Did) != did {
+							//	return int64(index.Did) >= did
+							//}
+							//return int64(index.Timestamp) >= start
+							return int64(index.Did) >= did
+						})
+						r := sort.Search(at.Len()/IndexSize, func(i int) bool {
+
+							buff := make([]byte, IndexSize)
+							_, err := at.ReadAt(buff, int64(i*IndexSize))
+							if err != nil {
+								logrus.Errorln(err)
+								return false
+							}
+							reader := bytes.NewReader(buff)
+							index := &Index{}
+							err = index.Read(reader)
+							if err != nil {
+								return false
+							}
+
+							//if int64(index.Did) != did {
+							//	return int64(index.Did) > did
+							//}
+							//return int64(index.Timestamp) > end
+							return int64(index.Did) > did
+						})
+						//logrus.Infoln("l,r,size:", l, r, int64((r-l)*IndexSize), "offset:", int64(l*IndexSize))
+						buf = make([]byte, int64((r-l)*IndexSize))
+						_, err := at.ReadAt(buf, int64(l*IndexSize))
+						if err != nil {
+							panic(err)
+						}
+						err = c.BigCache.Set(indexCacheKey, buf)
+						if err != nil {
+							panic(err)
+						}
+					})
+				}
+
+				//for {
+				//	index := Index{}
+				//	err = index.Read(bytes.NewReader(buf))
+				//	if err != nil {
+				//		break
+				//	}
+				//	indexs = append(indexs, index)
+				//}
+
+				//if len(indexs) == 0 {
+				//	return
+				//}
+
+				//logrus.Infoln("indexs:", len(indexs), indexs[0], indexs[len(indexs)-1])
+				//return
+
+				// get l,r
+				if len(buf) == 0 {
 					return
 				}
-				defer at.Close()
-				//_ = at.Close()
-				//at.Len()
 
-				//logrus.Infoln("read index ", time.Now().UnixMilli()-t.UnixMilli())
-				//logrus.Infoln("open index file", path, "len:", at.Len())
-
-				t = time.Now()
-
-				var indexs []*Index
-
-				l := sort.Search(at.Len()/IndexSize, func(i int) bool {
-
-					buff := make([]byte, IndexSize)
-					_, err := at.ReadAt(buff, int64(i*IndexSize))
-					if err != nil {
-						logrus.Errorln(err)
-						return false
-					}
-					reader := bytes.NewReader(buff)
-
-					index := &Index{}
-					err = index.Read(reader)
-					if err != nil {
-						return false
-					}
-					//logrus.Infoln("index:", index)
-					if int64(index.Did) != did {
-						return int64(index.Did) >= did
-					}
-					return int64(index.Timestamp) >= start
-				})
-				r := sort.Search(at.Len()/IndexSize, func(i int) bool {
-					buff := make([]byte, IndexSize)
-					_, err := at.ReadAt(buff, int64(i*IndexSize))
-					if err != nil {
-						logrus.Errorln(err)
-						return false
-					}
-					reader := bytes.NewReader(buff)
-					index := &Index{}
-					err = index.Read(reader)
-					if err != nil {
-						return false
-					}
-
-					if int64(index.Did) != did {
-						return int64(index.Did) > did
-					}
-					return int64(index.Timestamp) > end
-				})
-				buff := make([]byte, int64((r-l)*IndexSize))
-				_, err = at.ReadAt(buff, int64((r-l)*IndexSize))
+				var l, r Index
+				err = l.Read(bytes.NewReader(buf[:IndexSize]))
 				if err != nil {
-					logrus.Errorln(err, int64((r-l)*IndexSize))
-					return
+					panic(err)
 				}
-				reader := bytes.NewReader(buff)
-				for i := l; i < r; i++ {
-					index := &Index{}
-					err = index.Read(reader)
+				err = r.Read(bytes.NewReader(buf[len(buf)-IndexSize:]))
+				if err != nil {
+					panic(err)
+				}
+
+				//logrus.Infoln(l, r)
+
+				// read data from cache
+				//dataSize := indexs[len(indexs)-1].Offset + uint64(indexs[len(indexs)-1].Length) - indexs[0].Offset
+				dataSize := r.Offset + uint64(r.Length) - l.Offset
+				//logrus.Infoln("IndexSize", dataSize/IndexSize)
+				dataKey := key[:len(key)-5] + "data"
+				dataCacheKey := dataKey + "_" + conv.ToAny[string](did)
+				dataBuf, err := c.BigCache.Get(dataCacheKey)
+				if err != nil || len(dataBuf) != int(dataSize) {
+					c.ReadFile(dataKey, func(at *mmap.ReaderAt) {
+						dataBuf = make([]byte, dataSize)
+						_, err := at.ReadAt(dataBuf, int64(l.Offset))
+						//_, err := at.ReadAt(dataBuf, int64(indexs[0].Offset))
+						if err != nil {
+							panic(err)
+						}
+					})
+					err := c.BigCache.Set(dataCacheKey, dataBuf)
+					if err != nil {
+						panic(err)
+					}
+				}
+
+				// read data
+				reader := bytes.NewReader(buf)
+				var i Index
+				for {
+					err := i.Read(reader)
 					if err != nil {
 						break
 					}
-					indexs = append(indexs, index)
-				}
-
-				//logrus.Infoln("search index", time.Now().UnixMilli()-t.UnixMilli(), "index cnt:", r-l)
-				t = time.Now()
-
-				stream, err := c.dataDisk.ReadStream(key[:len(key)-5]+"data", false)
-				if err != nil {
-					logrus.Errorln(err)
-					return
-				}
-				//logrus.Infoln(key, len(indexs))
-				func() {
-					defer stream.Close()
-					if len(indexs) > 0 {
-						_, err = io.CopyN(io.Discard, stream, int64(indexs[0].Offset))
-						if err != nil {
-							return
-						}
-						for i := 0; i < len(indexs); i++ {
-							body := make([]byte, indexs[i].Length)
-							_, err := stream.Read(body)
-							if err != nil {
-								return
-							}
-							var v pb.Data
-							err = proto.Unmarshal(body, &v)
-							if err != nil {
-								return
-							}
-							dataChan <- &v
-						}
+					//logrus.Infoln(indexCacheKey, i)
+					var v pb.Data
+					offset := i.Offset - l.Offset
+					length := uint64(i.Length)
+					err = proto.Unmarshal(dataBuf[offset:offset+length], &v)
+					if err != nil {
+						panic(err)
 					}
-				}()
+					dataChan <- &v
+					//logrus.Infoln(v.Did, v.Timestamp)
+				}
 
-				logrus.Infoln("read data", time.Now().UnixMilli()-t.UnixMilli())
+				//for i := 0; i < len(indexs); i++ {
+				//	var v pb.Data
+				//	offset := indexs[i].Offset - indexs[0].Offset
+				//	length := uint64(indexs[i].Length)
+				//	err = proto.Unmarshal(dataBuf[offset:offset+length], &v)
+				//	if err != nil {
+				//		panic(err)
+				//	}
+				//	dataChan <- &v
+				//}
 
 			})
 		}

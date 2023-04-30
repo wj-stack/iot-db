@@ -2,16 +2,21 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/allegro/bigcache/v3"
 	"github.com/dablelv/go-huge-util/conv"
 	"github.com/golang/protobuf/proto"
+	"github.com/patrickmn/go-cache"
 	"github.com/peterbourgon/diskv/v3"
 	"github.com/sirupsen/logrus"
+	"io"
 	"iot-db/internal/pb"
 	"iot-db/pkg/skiplist"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +26,10 @@ type Cake struct {
 	shardGroupChan chan dump
 	fieldDisk      *diskv.Diskv // key
 	dataDisk       *diskv.Diskv // value
+	Keys           map[string]struct{}
+	Cache          *cache.Cache
+	BigCache       *bigcache.BigCache
+	mu             sync.RWMutex
 	Optional       *Optional
 }
 
@@ -76,15 +85,27 @@ func NewEngine(op *Optional) *Cake {
 		CacheSizeMax: 0,
 	})
 
+	c := cache.New(time.Hour, time.Minute) // save mmap fd
+
+	bc, err := bigcache.New(context.Background(), bigcache.DefaultConfig(10*time.Minute))
+	if err != nil {
+		panic(err)
+	}
+
 	obj := &Cake{
 		size:           0,
 		shardGroup:     map[int64]skiplist.MapI[*pb.Data, struct{}]{},
 		shardGroupChan: make(chan dump, 10),
 		fieldDisk:      fieldDisk,
 		dataDisk:       dataDisk,
+		Keys:           map[string]struct{}{},
+		Cache:          c,
+		BigCache:       bc,
+		mu:             sync.RWMutex{},
 		Optional:       op,
 	}
 
+	obj.InitKey()
 	go obj.dump()
 
 	return obj
@@ -171,25 +192,8 @@ func (c *Cake) dump() {
 		t := time.Now().UnixNano()
 		dataKey := fmt.Sprintf("%d_%d_%d_data", ShardGroupSize, msg.shardId, t)
 		indexKey := fmt.Sprintf("%d_%d_%d_index", ShardGroupSize, msg.shardId, t)
-		func() {
-			indexFile, err := os.CreateTemp("", indexKey)
-			if err != nil {
-				logrus.Fatalln(err)
-			}
-			defer func() {
-				indexFile.Close()
-				os.Remove(indexFile.Name())
-			}()
 
-			dataFile, err := os.CreateTemp("", dataKey)
-			if err != nil {
-				logrus.Fatalln(err)
-			}
-			defer func() {
-				dataFile.Close()
-				os.Remove(dataFile.Name())
-			}()
-
+		c.AddFile(indexKey, dataKey, func(dataFile, indexFile io.Writer) {
 			it, err := shardGroup.Iterator()
 			if err != nil {
 				return
@@ -204,14 +208,13 @@ func (c *Cake) dump() {
 
 				marshal, err := proto.Marshal(data)
 				if err != nil {
-					logrus.Fatalln(err)
+					panic(err)
 				}
 
 				n, err := dataFile.Write(marshal)
 				if err != nil {
-					logrus.Fatalln(err)
+					panic(err)
 				}
-
 				index := &Index{
 					Did:       uint32(data.Did),
 					Offset:    offset,
@@ -221,22 +224,12 @@ func (c *Cake) dump() {
 				}
 				_, err = index.Write(indexFile)
 				if err != nil {
-					logrus.Fatalln(err)
+					panic(err)
 				}
 				offset += uint64(n)
 			}
-			logrus.Infoln("size:", shardGroup.Size())
-			err = c.dataDisk.Import(dataFile.Name(), dataKey, true)
-			if err != nil {
-				logrus.Fatalln(err)
-			}
-			err = c.dataDisk.Import(indexFile.Name(), indexKey, true)
-			if err != nil {
-				logrus.Fatalln(err)
-			}
-		}()
+		})
 		logrus.Infoln("dump", indexKey, dataKey)
-
 	}
 }
 
